@@ -18,14 +18,15 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Zapping con teclas | ✅ | `KEYCODE_CHANNEL_UP/DOWN` (166/167) → canal siguiente/anterior; `PROG_RED` → modo "zap solo favoritos" |
 | Favoritos | ✅ | tecla amarilla (185) o long-press OK; persistidos en JSON |
 | Banner de canal | ✅ | logo + número + nombre + ★ + "Ahora/Luego" (EPG) al cambiar de canal |
-| Grilla de canales | ✅ | Compose for TV, chips de categoría, logo por canal, foco visible |
+| Grilla de canales | ✅ | Compose for TV, chips de categoría, logo por canal, foco visible (navegación **determinista**, ver §8) |
 | Setup por QR | ✅ | la TV sirve una web por HTTP; QR con `<url>/pair#<codigo>` + código de 6 dígitos |
 | Companion web (celular) | ✅ | Preact + Vite, 19 KB JS: configurar playlist, control remoto, listado, favoritos |
 | API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` — los endpoints que **modifican** la TV exigen el token que devuelve `/api/pair` |
 | EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3 |
 | Robustez de reproducción | ✅ | error visible en pantalla, salto automático al canal siguiente, retoma el último canal al abrir. Ver §7 |
-| Variantes / selector de calidad | ❌ | fuera de P0 → P1 (diseño en `docs/PLAN.md` §5) |
-| Comparar canales (mosaico + PiP) | ❌ | fuera de P0 → P1 |
+| Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
+| Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
+| Comparar canales (mosaico + PiP) | ❌ | fuera de P0 → **P2** |
 | Persistencia Room / multi-lista / PWA | ❌ | fuera de P0 → P1/P2 |
 
 ---
@@ -243,4 +244,77 @@ fallback entre variantes, la app cae en "South Atlantic (1080p)" sin cambiar de 
 | Reproducción | 1280×720 ✓ |
 
 La estrategia de optimización (medir primero, optimizar de a pares con cada feature, y no tocar
-el main thread) está en `docs/PLAN.md` §13.
+el main thread) está en `docs/PLAN.md` §14.
+
+---
+
+## 8 · P1 en la TV: lo que se resolvió (y cómo)
+
+### El foco de Compose no funcionaba en la TV — dos intentos fallidos
+
+Con Compose **1.10.3** (el que resuelve el proyecto, no el 1.7.5 del BOM):
+
+1. `Modifier.clickable` **no crea un focus target**. Mirando el bytecode de `ClickableKt`:
+   `AbstractClickableNode` implementa `PointerInputModifierNode`, `KeyInputModifierNode`,
+   `SemanticsModifierNode`, `TraversableNode`, `CompositionLocalConsumerModifierNode`,
+   `ObserverModifierNode` e `IndirectPointerInputModifierNode` — **nada de `FocusableModifierNode`**
+   (aunque internamente tenga un `FocusableNode` privado, que solo sirve para delegar key input).
+2. Agregando `.focusable()` + un `FocusRequester` por tarjeta, el foco **seguía sin enganchar**:
+   el logcat mostraba `focused=false` en todas las tarjetas y ni una sola línea `focus OK`.
+   El `FocusRequester` queda atado a un nodo, y en una grilla lazy ese nodo nunca terminó
+   siendo el focusable activo.
+
+**Solución implementada: navegación determinista.** Se abandona el foco nativo de Compose para la
+grilla y el **`TvController` pasa a ser el dueño del foco**:
+
+| Pieza | Qué hace |
+|---|---|
+| `TvController.focusedGroupId` | canal enfocado (grilla) |
+| `TvController.focusedCategory` | chip enfocado (`null` = el foco está en la grilla) |
+| `TvController.focusedVariantId` | variante enfocada (selector de calidad) |
+| `TvController.onDpad(code)` | mueve el foco según el D-pad |
+| `TvController.setGridColumns(n)` | la UI informa cuántas columnas tiene la grilla |
+| `/api/state` | expone `focusedId`, `focusedName`, `focusedCategory` |
+
+Reglas: ←/→ mueven dentro de la fila · ↑/↓ saltan una fila completa · ↑ en la primera fila sube a
+los chips de categoría · ↓ en los chips vuelve a la grilla · en el selector de calidad ↑/↓ recorren
+las variantes.
+
+La grilla pasó de `GridCells.Adaptive(200.dp)` a `GridCells.Fixed(columns)` con las columnas
+calculadas exactamente (4 en 1920×1080 @ 320 dpi), así el salto de fila del D-pad coincide con lo
+que se ve en pantalla.
+
+**Por qué esta decisión y no otra**: con foco determinista, el **control remoto físico y el
+companion hacen exactamente lo mismo** (mismo método, misma ruta de código), no depende de quirks de
+foco por versión de Compose ni por fabricante de TV, y el estado del foco es observable desde la
+API.
+
+### Verificado en la TV (TCL Smart TV Pro)
+
+```
+OK                → abre la grilla (foco en el canal actual)
+D-pad RIGHT       → Xtrema Cine Clasico (idx 6, col 1) → Comedy Central (idx 7, col 2)
+D-pad RIGHT (borde)→ no desborda la fila
+D-pad DOWN        → Catamarca TV (idx 11)  [salta 4 = una fila]
+D-pad UP (fila 0) → sube a la fila de chips
+D-pad RIGHT       → chips: 'Animation' → 'Classic'
+D-pad DOWN        → vuelve a la grilla
+Selector calidad → Disney Channel: DOWN recorre '1080P · Panregional' → 'South'
+Companion (HTTP)  → {"type":"key","code":20} mueve el foco igual que el control remoto
+```
+
+Capturas: el borde azul sigue al canal enfocado (LAMIL35 TV #4) y el selector de calidad marca la
+variante elegida.
+
+### Además, en P1
+
+- **Agrupación de canales**: 206 feeds → **201 canales lógicos** (solo 4 grupos tienen más de un
+  feed). La clave es el `tvg-id` **base** (`Base.cc@Qualifier` → `Base.cc`); si no hay tvg-id
+  útil, se agrupa por nombre normalizado (sacando tokens de calidad y región).
+- **Fallback entre variantes**: si la variante activa falla, se prueban las otras **del mismo
+  canal** antes de saltar al canal siguiente.
+- **Errores transitorios**: `ERROR_CODE_BEHIND_LIVE_WINDOW` / `IO_READ_POSITION_OUT_OF_RANGE` se
+  reintentan (2 veces, 1,5 s de espera) en la misma variante; un 403 real marca el feed como muerto.
+- **Feed muerto con TTL**: el estado `dead` expira a las 6 h y el usuario puede reintentar
+  explícitamente.
+- **Resolución medida**: se guarda la resolución real detectada por variant (`measuredResolution`).

@@ -24,7 +24,15 @@ data class PersistedState(
     val zapFavoritesOnly: Boolean = false,
     val pairingCode: String = "",
     val tokens: List<String> = emptyList(),
-    val lastChannelId: String = ""
+    val lastChannelId: String = "",
+    /** Ultimo canal LOGICO visto (estable entre reinicios). */
+    val lastGroupId: String = "",
+    /** Preferencia de calidad: id de canal logico -> id de variante elegida. */
+    val qualityPreference: Map<String, String> = emptyMap(),
+    /** Salud por variante: id de variante -> ok | dead | slow. */
+    val variantStatus: Map<String, String> = emptyMap(),
+    /** Resolución REAL medida por variante: id de variante -> "1280x720". */
+    val measuredResolution: Map<String, String> = emptyMap()
 )
 
 class KzStore(context: Context) {

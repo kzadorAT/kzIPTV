@@ -62,6 +62,8 @@ class PlayerManager(context: Context) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // Log completo: la cadena de causas dice si fue 403, 404 o un problema de red.
+                android.util.Log.e("KzIPTV", "PlayerManager.onPlayerError", error)
                 onError?.invoke(describe(error))
             }
 

@@ -2,7 +2,7 @@
 
 > IPTV player para **Android TV**: listas m3u (iptv-org y propias), setup por **QR desde el celular** sin escribir en la TV, zapping con las teclas **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico + PiP**).
 
-Estado: diseño cerrado con tus respuestas (24/10/2026) · próxima fase: **P0 (spike)**
+Estado: diseño cerrado (24/10/2026) · **P0 cerrado** (spike probado en la TV real) · **P1 en curso** · fase actual: **P1 (MVP)**
 
 ## 1 · Objetivo y alcance
 
@@ -220,10 +220,10 @@ kzIPTV/
 
 | Fase | Duración | Entregable | Criterio de salida |
 |---|---|---|---|
-| **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | reproducción fluida en tus TVs · zap < 2.5 s · teclas OK · XMLTV AR generado y matchea |
-| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | setup desde el celu en < 1 min · zap y favoritos usables a diario · la app nunca queda en negro por un feed muerto |
-| **P2 · Guía y comparación** | 2-3 sem | EPG ahora/siguiente + grilla, mosaico on-device, PiP, celu como control remoto, health check | grilla usable · mosaico sin lag perceptible · PiP en tus SoC (o fallback) |
-| **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | — |
+| **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | ✅ **cerrado** (probado en la TCL real) |
+| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback y navegación determinista. Falta: Room, refresh con diff, búsqueda, 0-9, EPG fresco |
+| **P2 · Guía y comparación** | 2-3 sem | EPG ahora/siguiente + grilla, mosaico on-device, PiP, celu como control remoto, health check | ⬜ pendiente (el EPG de mi.tv ya da ahora/siguiente) |
+| **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | ⬜ pendiente |
 
 ## 11 · Riesgos y fricciones
 
@@ -234,18 +234,70 @@ kzIPTV/
 - **Legal**: kzIPTV es un reproductor genérico; iptv-org indexa streams públicos. Playlists privadas bajo tu responsabilidad.
 - **Distribución**: sideload personal sin fricción; Play Store solo si algún día lo querés público (requiere revisión leanback).
 
-## 12 · Próximos pasos (checklist P0)
+## 12 · Estado del checklist P0 (cerrado)
 
-1. Proyecto Gradle "app-tv" (Compose for TV) con grilla leyendo ar.m3u embebida.
-2. ExoPlayer reproduciendo; CH± zap con banner básico; probar en las TVs reales y medir el zap.
-3. Correr local (Node) las utilidades iptv-org/epg para AR; verificar match de tvg-id; generar ar.xml de prueba.
-4. Hello-world del server embebido (Ktor) + QR en pantalla, abierto desde el celu.
+1. ✅ Proyecto Gradle "app-tv" (Compose for TV) con grilla leyendo ar.m3u embebida.
+2. ✅ ExoPlayer reproduciendo; CH± zap con banner básico; probado en la TV real.
+3. ✅ EPG: se verificó que el XMLTV estático de iptv-org ya no existe (404) y se implementó un
+   **scraper de mi.tv** (210 canales AR) parseado en background → 2.474 programas.
+4. ✅ Server embebido (Ktor) + QR en pantalla, abierto desde el celu (emparejamiento con código
+   de 6 dígitos + token por dispositivo).
 
-Con P0 en verde, arrancamos P1 con el esqueleto completo (app + companion + workflow).
+**Lo que empujó el resto a P1**: la navegación con el D-pad (resuelta con foco determinista),
+la agrupación de variantes + selector de calidad con fallback, y el salvapantallas.
 
 ---
 
-## 13 · Rendimiento: qué medimos y cuándo optimizar
+## 13 · Learnings de la TV real (spike P0→P1)
+
+Estas cosas se aprendieron probando en la TCL Smart TV Pro y **no se ven en el código ni en la doc de Compose**:
+
+### El foco nativo de Compose no enganchaba (2 intentos fallidos)
+
+Con Compose 1.10.3 (el que resuelve el proyecto, no el 1.7.5 del BOM):
+
+- `Modifier.clickable` **no crea un focus target**: `AbstractClickableNode` implementa
+  `PointerInputModifierNode`, `KeyInputModifierNode`, `SemanticsModifierNode`, etc., pero
+  **no** `FocusableModifierNode`. Hay que agregarle `Modifier.focusable()` aparte.
+- Con `.focusable()` + `FocusRequester` el foco **seguía sin enganchar**: los logcats mostraban
+  `focused=false` en todas las tarjetas y ni un solo `focus OK`. El `FocusRequester` se
+  asociaba a un nodo que nunca quedaba focusable en la grilla lazy.
+- Un `FocusRequester` por item no resuelve nada: es un objeto de un solo nodo.
+
+**Decisión: navegación determinista.** El `TvController` es el dueño del índice de foco;
+la UI **solo pinta el borde y hace scroll**. Beneficios:
+
+- el control remoto físico y el companion hacen **exactamente lo mismo** (mismo código, misma ruta);
+- no depende de quirks de foco por versión de Compose ni de fabricante de TV;
+- el estado del foco es observable (va en `/api/state` → `focusedId/focusedName/focusedCategory`).
+
+`TvController.onDpad(code)` resuelve:
+- **GRID**: ←/→ mueven dentro de la fila; ↑/↓ saltan `columns` filas; ↑ en la primera fila
+  sube a la fila de chips; ↓ en los chips vuelve a la grilla.
+- **QUALITY**: ↑/↓ recorren las variantes del canal.
+
+La grilla calcula sus columnas exactas (`GridCells.Fixed`) y las informa al controller
+(`setGridColumns`) para que el salto de fila coincida con lo que se ve.
+
+### Cosas que en la TV no salen como en el emulator
+
+| Tema | Lo que pasó |
+|---|---|
+| `adb screencap` | sale **negro** en el video (SurfaceView). Para verificar reproducción hay que leer `/api/state` (`playbackState`, `videoWidth`) |
+| Errores Media3 | `ERROR_CODE_BEHIND_LIVE_WINDOW` = el server rota el nombre del media-playlist en cada pedido del master → re-preparar el player lo resuelve |
+| Thread affinity | ExoPlayer se usa **en el hilo que lo creó**; los comandos del server se marshalean con `controller.onMain { }` |
+| Salvapantallas | se apagaba durante la reproducción → `FLAG_KEEP_SCREEN_ON` (verificado en `dumpsys window`: `fl=KEEP_SCREEN_ON`) |
+| ANR | el regex del XMLTV bloqueaba el main thread → parser lineal + `Dispatchers.IO` |
+
+### Bugs reales encontrados por probar en la TV
+
+- Un feed 403 (Cartoon Network Latin America) dejaba la **pantalla negra**: ahora el canal
+  lógico agrupa sus variantes y cae en la que funciona.
+- Los estados "muerto" quedaban pegados para siempre → TTL de 6 h + el usuario puede reintentar.
+- El picker de calidad se cerraba solo cuando el retry automático cambiaba de variante →
+  los retries ya no cambian de pantalla.
+
+## 14 · Rendimiento: qué medimos y cuándo optimizar
 
 **Medido en la TCL Smart TV Pro (Android 11), build debug, arranque en frío:**
 

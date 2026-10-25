@@ -86,3 +86,52 @@ button.primary { background: var(--blue); color: #06131c; border-color: transpar
 .channels .info strong { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channels .info span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .channels .star { background: none; border: none; color: var(--blue); font-size: 22px; padding: 4px 8px; }
+.screenhint {
+  display: block;
+  font-size: 0.75rem;
+  color: #7c8899;
+  margin-top: 2px;
+}
+.screenhint.focus { color: var(--blue); font-weight: 600; }
+
+.nowplaying {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px;
+  background: #10222e; border: 1px solid var(--blue); border-radius: 12px;
+}
+.nowplaying img { width: 54px; height: 38px; object-fit: contain; background: #0e141c; border-radius: 6px; }
+.nowplaying div { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.nowplaying strong { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nowplaying span { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nowplaying .state {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted);
+}
+.nowplaying .state.playing { color: #7ee787; border-color: #234d2c; }
+.nowplaying .state.error { color: #ff8a80; border-color: #5c2626; }
+
+.qbadge { color: var(--blue); font-size: 18px; padding: 0 4px; }
+
+.modal {
+  position: fixed; inset: 0; background: rgba(3, 7, 12, .78);
+  display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 20;
+}
+.sheet {
+  width: min(520px, 100%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 16px; padding: 16px; max-height: 86vh; overflow: auto;
+}
+.sheet h2 { margin: 0 0 4px; font-size: 18px; }
+
+.variants { list-style: none; margin: 10px 0 14px; padding: 0; }
+.variants li {
+  display: flex; align-items: center; gap: 10px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px; cursor: pointer;
+}
+.variants li.active { border-color: var(--blue); background: #10222e; }
+.variants li > strong { color: var(--blue); font-size: 14px; width: 64px; flex: none; }
+.variants .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.variants .info strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.variants .info span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vstatus { font-size: 11px; color: var(--muted); }
+.vstatus.dead { color: #ff8a80; }
+.vstatus.ok { color: #7ee787; }
+

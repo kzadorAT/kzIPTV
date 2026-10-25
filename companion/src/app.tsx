@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 
+type VariantDto = {
+  id: string;
+  name: string;
+  label: string;
+  quality: string;
+  region: string;
+  host: string;
+  status: string;
+  measured: string;
+  active: boolean;
+};
+
 type ChannelDto = {
   id: string;
   name: string;
@@ -11,17 +23,27 @@ type ChannelDto = {
   tvgId: string;
   now: string;
   next: string;
+  variants: VariantDto[];
+  activeVariantId: string;
 };
 
 type StateDto = {
   pairingCode: string;
+  screen: string;
   serverUrl: string;
   status: string;
   playbackState: string;
   playbackError: string;
+  focusedId: string | null;
+  focusedName: string;
+  focusedCategory: string | null;
   currentId: string | null;
+  currentVariantId: string | null;
+  currentVariantLabel: string;
   zapFavoritesOnly: boolean;
   channelCount: number;
+  groupCount: number;
+  variantCount: number;
   categories: string[];
   channels: ChannelDto[];
 };
@@ -62,6 +84,7 @@ export function App() {
   const [url, setUrl] = useState<string>("https://iptv-org.github.io/iptv/countries/ar.m3u");
   const [message, setMessage] = useState<string>("");
   const [search, setSearch] = useState<string>("");
+  const [qualityFor, setQualityFor] = useState<ChannelDto | null>(null);
   const socket = useRef<WebSocket | null>(null);
 
   // estado de la TV (polling simple y robusto)
@@ -157,6 +180,8 @@ export function App() {
     return c.name.toLowerCase().includes(q) || c.groups.join(" ").toLowerCase().includes(q);
   });
 
+  const current = (state?.channels || []).find((c) => c.id === state?.currentId);
+
   return (
     <div class="app">
       <header>
@@ -164,11 +189,39 @@ export function App() {
           <span class="logo">kz</span>
           <div>
             <h1>kzIPTV</h1>
-            <p>{state ? state.channelCount + " canales" : "conectando..."}</p>
+            <p>
+              {state ? state.groupCount + " canales" : "conectando..."}
+              {state && state.variantCount > state.groupCount ? " · " + state.variantCount + " feeds" : ""}
+            </p>
           </div>
         </div>
         <span class={"pill " + (paired ? "ok" : "warn")}>{paired ? "Emparejado" : "Sin emparejar"}</span>
       </header>
+
+      {current ? (
+        <div class="nowplaying">
+          <img src={current.logo} alt="" />
+          <div>
+            <strong>{current.number}. {current.name}</strong>
+            <span>
+              {state?.currentVariantLabel || "—"}
+              {current.now ? " · " + current.now : ""}
+            </span>
+            <span class="screenhint">
+              TV en: {state?.screen || "—"}
+              {state && state.videoWidth > 0 ? " · " + state.videoWidth + "x" + state.videoHeight : ""}
+            </span>
+            {state && state.focusedName ? (
+              <span class="screenhint focus">
+                {state.screen === "GRID"
+                  ? "En la grilla: " + state.focusedName
+                  : "Foco: " + state.focusedName}
+              </span>
+            ) : null}
+          </div>
+          <span class={"state " + (state?.playbackState || "")}>{state?.playbackState}</span>
+        </div>
+      ) : null}
 
       <nav class="tabs">
         <button class={tab === "setup" ? "active" : ""} onClick={() => setTab("setup")}>Configurar</button>
@@ -213,8 +266,10 @@ export function App() {
             <button onClick={() => key(KEY.CH_UP)}>Canal +</button>
             <button onClick={() => key(KEY.YELLOW)}>★ Favorito</button>
             <button onClick={() => key(KEY.RED)}>Zap favoritos</button>
+            <button onClick={() => send({ type: "quality" })}>Calidad</button>
             <button onClick={() => key(KEY.BLUE)}>Emparejar / QR</button>
             <button onClick={() => key(KEY.BACK)}>Volver</button>
+            <button onClick={() => key(KEY.MENU)}>Menu / QR</button>
           </div>
           <label>Buscar en la TV</label>
           <div class="row">
@@ -225,9 +280,9 @@ export function App() {
             }} placeholder="nombre del canal" />
           </div>
           <p class="msg">{state ? state.status : ""}</p>
-      {state && state.playbackError ? (
-        <p class="msg err">Error de reproducción: {state.playbackError}</p>
-      ) : null}
+          {state && state.playbackError ? (
+            <p class="msg err">Error de reproducción: {state.playbackError}</p>
+          ) : null}
         </section>
       )}
 
@@ -237,12 +292,19 @@ export function App() {
           <input value={search} onInput={(e) => setSearch((e.target as HTMLInputElement).value)} placeholder="Filtrar" />
           <ul class="channels">
             {channels.slice(0, 300).map((c) => (
-              <li key={c.id} class={c.id === state?.currentId ? "current" : ""} onClick={() => send({ type: "play", channelId: c.id })}>
+              <li key={c.id} class={c.id === state?.currentId ? "current" : ""} onClick={() => {
+                if (c.variants.length > 1) setQualityFor(c);
+                else send({ type: "play", channelId: c.id });
+              }}>
                 <img src={c.logo} alt="" loading="lazy" />
                 <div class="info">
                   <strong>{c.number}. {c.name}</strong>
-                  <span>{c.now ? c.now : c.groups.join(" · ")}</span>
+                  <span>
+                    {c.now ? c.now : c.groups.join(" · ")}
+                    {c.variants.length > 1 ? " · " + c.variants.length + " calidades" : ""}
+                  </span>
                 </div>
+                {c.variants.length > 1 ? <span class="qbadge">⚙</span> : null}
                 <button class="star" onClick={(e) => { e.stopPropagation(); toggleFavorite(c.id, !c.favorite); }}>
                   {c.favorite ? "★" : "☆"}
                 </button>
@@ -251,6 +313,31 @@ export function App() {
           </ul>
         </section>
       )}
+
+      {qualityFor ? (
+        <div class="modal" onClick={() => setQualityFor(null)}>
+          <div class="sheet" onClick={(e) => e.stopPropagation()}>
+            <h2>{qualityFor.name}</h2>
+            <p class="msg">Elegí la calidad (feed) de este canal</p>
+            <ul class="variants">
+              {qualityFor.variants.map((v) => (
+                <li key={v.id} class={v.active ? "active" : ""} onClick={() => {
+                  send({ type: "variant", channelId: qualityFor.id, variantId: v.id });
+                  setQualityFor(null);
+                }}>
+                  <strong>{v.quality ? v.quality.toUpperCase() : "AUTO"}</strong>
+                  <div class="info">
+                    <strong>{v.name}</strong>
+                    <span>{v.host}{v.region ? " · " + v.region : ""}{v.measured ? " · real " + v.measured : ""}</span>
+                  </div>
+                  <span class={"vstatus " + v.status}>{v.status === "dead" ? "muerto" : v.status === "ok" ? "ok" : ""}</span>
+                </li>
+              ))}
+            </ul>
+            <button onClick={() => setQualityFor(null)}>Cerrar</button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

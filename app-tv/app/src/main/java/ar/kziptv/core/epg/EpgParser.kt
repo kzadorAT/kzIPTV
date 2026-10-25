@@ -135,6 +135,17 @@ class EpgIndex(val programs: List<EpgProgram>) {
         return current to next
     }
 
+    /** Para el canal LOGICO: el EPG usa el tvg-id base (sin @calificador). */
+    fun nowNextByTvgId(tvgId: String, now: Long = System.currentTimeMillis()): Pair<EpgProgram?, EpgProgram?> {
+        if (tvgId.isBlank()) return null to null
+        val list = byExact[tvgId.lowercase()]?.sortedBy { it.start }
+            ?: byNormalized[normalizeTvgId(tvgId)]?.sortedBy { it.start }
+            ?: emptyList()
+        val current = list.firstOrNull { it.start <= now && it.stop > now }
+        val next = list.firstOrNull { it.start > now }
+        return current to next
+    }
+
     companion object {
         fun normalizeTvgId(id: String): String =
             id.trim().lowercase().substringBefore("@").replace(Regex("[^a-z0-9]"), "")

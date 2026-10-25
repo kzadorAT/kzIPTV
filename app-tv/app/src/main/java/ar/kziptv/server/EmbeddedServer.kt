@@ -49,6 +49,7 @@ data class CommandRequest(
     val code: Int? = null,
     val delta: Int? = null,
     val channelId: String? = null,
+    val variantId: String? = null,
     val enabled: Boolean? = null,
     val text: String? = null,
     val category: String? = null,
@@ -202,6 +203,7 @@ class EmbeddedServer(
         // Todo lo que toca el player o la UI tiene que ir al hilo principal.
         controller.onMain {
             try {
+                android.util.Log.d("KzIPTV", "comando remoto: " + command.type + " " + command.code)
                 when (command.type) {
                     "key" -> when (command.code) {
                         166 -> controller.zap(1)
@@ -211,12 +213,23 @@ class EmbeddedServer(
                         23, 66 -> controller.onOk(false)
                         4 -> controller.back()
                         82, 186 -> controller.openPairing()
+                        // Flechas: se reinyectan como tecla real para que Compose mueva el foco.
+                        19, 20, 21, 22 -> ar.kziptv.MainActivity.injectKey(command.code)
                         else -> Unit
                     }
                     "zap" -> controller.zap(command.delta ?: 1)
                     "play" -> command.channelId?.let { id ->
-                        controller.catalog.value.byId[id]?.let { controller.play(it) }
+                        // acepta id de canal logico o de feed concreto
+                        controller.catalog.value.resolve(id)?.let { controller.play(it) }
                     }
+                    "variant" -> {
+                        val groupId = command.channelId.orEmpty()
+                        val variantId = command.variantId.orEmpty()
+                        if (groupId.isNotBlank() && variantId.isNotBlank()) {
+                            controller.playVariant(groupId, variantId)
+                        }
+                    }
+                    "quality" -> controller.openQuality()
                     "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
                     "text" -> controller.setQuery(command.text.orEmpty())
                     "category" -> controller.setCategory(command.category)
