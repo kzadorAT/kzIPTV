@@ -1,6 +1,7 @@
 package ar.kziptv.server
 
 import android.content.Context
+import android.util.Log
 import ar.kziptv.data.KzStore
 import ar.kziptv.ui.StateDto
 import ar.kziptv.ui.TvController
@@ -37,10 +38,10 @@ import java.util.UUID
 data class PairRequest(val code: String = "")
 
 @Serializable
-data class SourceRequest(val url: String = "", val name: String = "", val content: String = "")
+data class SourceRequest(val url: String = "", val name: String = "", val content: String = "", val token: String? = null)
 
 @Serializable
-data class FavoriteRequest(val channelId: String = "", val enabled: Boolean? = null)
+data class FavoriteRequest(val channelId: String = "", val enabled: Boolean? = null, val token: String? = null)
 
 @Serializable
 data class CommandRequest(
@@ -50,7 +51,8 @@ data class CommandRequest(
     val channelId: String? = null,
     val enabled: Boolean? = null,
     val text: String? = null,
-    val category: String? = null
+    val category: String? = null,
+    val token: String? = null
 )
 
 @Serializable
@@ -120,6 +122,10 @@ class EmbeddedServer(
 
             post("/api/source") {
                 val request = call.receive<SourceRequest>()
+                if (!validToken(request.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
                 try {
                     val count = if (request.url.isNotBlank()) {
                         controller.addSourceByUrl(request.url)
@@ -134,12 +140,20 @@ class EmbeddedServer(
 
             post("/api/favorite") {
                 val request = call.receive<FavoriteRequest>()
+                if (!validToken(request.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
                 applyFavorite(request.channelId, request.enabled)
                 call.respond(controller.snapshot())
             }
 
             post("/api/command") {
                 val command = call.receive<CommandRequest>()
+                if (!validToken(command.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
                 handleCommand(json.encodeToString(CommandRequest.serializer(), command))
                 call.respond(controller.snapshot())
             }
@@ -165,11 +179,17 @@ class EmbeddedServer(
         }
     }
 
+    /** Token valido = el que devolvio /api/pair (queda guardado en la TV). */
+    private fun validToken(token: String?): Boolean =
+        !token.isNullOrBlank() && token in store.state.value.tokens
+
     private fun applyFavorite(channelId: String, enabled: Boolean?) {
         if (channelId.isBlank()) return
-        val isFavorite = controller.favorites.value.contains(channelId)
-        if (enabled == null || enabled != isFavorite) {
-            controller.toggleFavorite(channelId)
+        controller.onMain {
+            val isFavorite = controller.favorites.value.contains(channelId)
+            if (enabled == null || enabled != isFavorite) {
+                controller.toggleFavorite(channelId)
+            }
         }
     }
 
@@ -179,26 +199,33 @@ class EmbeddedServer(
         } catch (e: Exception) {
             return
         }
-        when (command.type) {
-            "key" -> when (command.code) {
-                166 -> controller.zap(1)
-                167 -> controller.zap(-1)
-                185 -> controller.toggleFavorite()
-                183 -> controller.toggleZapMode()
-                23, 66 -> controller.onOk(false)
-                4 -> controller.back()
-                82, 186 -> controller.openPairing()
-                else -> Unit
+        // Todo lo que toca el player o la UI tiene que ir al hilo principal.
+        controller.onMain {
+            try {
+                when (command.type) {
+                    "key" -> when (command.code) {
+                        166 -> controller.zap(1)
+                        167 -> controller.zap(-1)
+                        185 -> controller.toggleFavorite()
+                        183 -> controller.toggleZapMode()
+                        23, 66 -> controller.onOk(false)
+                        4 -> controller.back()
+                        82, 186 -> controller.openPairing()
+                        else -> Unit
+                    }
+                    "zap" -> controller.zap(command.delta ?: 1)
+                    "play" -> command.channelId?.let { id ->
+                        controller.catalog.value.byId[id]?.let { controller.play(it) }
+                    }
+                    "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
+                    "text" -> controller.setQuery(command.text.orEmpty())
+                    "category" -> controller.setCategory(command.category)
+                    "grid" -> controller.openGrid()
+                    else -> Unit
+                }
+            } catch (e: Exception) {
+                Log.e("KzIPTV", "error aplicando comando ${command.type}", e)
             }
-            "zap" -> controller.zap(command.delta ?: 1)
-            "play" -> command.channelId?.let { id ->
-                controller.catalog.value.byId[id]?.let { controller.play(it) }
-            }
-            "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
-            "text" -> controller.setQuery(command.text.orEmpty())
-            "category" -> controller.setCategory(command.category)
-            "grid" -> controller.openGrid()
-            else -> Unit
         }
     }
 

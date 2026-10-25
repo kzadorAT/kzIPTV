@@ -85,27 +85,36 @@ export function App() {
   useEffect(() => {
     if (!token()) return;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(proto + "://" + window.location.host + "/ws?token=" + encodeURIComponent(token()));
-    socket.current = ws;
-    ws.onclose = () => {
-      socket.current = null;
+    let retry: number | undefined;
+    let ws: WebSocket | null = null;
+    const connect = () => {
+      if (!token()) return;
+      ws = new WebSocket(proto + "://" + window.location.host + "/ws?token=" + encodeURIComponent(token()));
+      socket.current = ws;
+      ws.onclose = () => {
+        socket.current = null;
+        retry = window.setTimeout(connect, 3000);
+      };
     };
+    connect();
     return () => {
-      ws.close();
+      if (retry) window.clearTimeout(retry);
+      if (ws) ws.close();
       socket.current = null;
     };
   }, [paired]);
 
   const send = (payload: Record<string, unknown>) => {
-    const body = JSON.stringify(payload);
+    const body = JSON.stringify({ ...payload, token: token() });
     if (socket.current && socket.current.readyState === WebSocket.OPEN) {
       socket.current.send(body);
     } else {
+      // fallback por HTTP cuando el WebSocket no esta disponible
       fetch("/api/command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body
-      });
+      }).catch(() => setMessage("Sin conexion con la TV"));
     }
   };
 
@@ -125,19 +134,19 @@ export function App() {
 
   const sendSource = async () => {
     setMessage("Enviando a la TV...");
-    const res = await api("/api/source", { url: url.trim() });
+    const res = await api("/api/source", { url: url.trim(), token: token() });
     setMessage(res.ok ? "Listo: " + res.count + " canales" : "Error: " + res.message);
   };
 
   const sendFile = async (file: File) => {
     const text = await file.text();
     setMessage("Subiendo " + file.name + "...");
-    const res = await api("/api/source", { name: file.name, content: text });
+    const res = await api("/api/source", { name: file.name, content: text, token: token() });
     setMessage(res.ok ? "Listo: " + res.count + " canales" : "Error: " + res.message);
   };
 
   const toggleFavorite = async (channelId: string, enabled: boolean) => {
-    await api("/api/favorite", { channelId, enabled });
+    await api("/api/favorite", { channelId, enabled, token: token() });
   };
 
   const channels = (state?.channels || []).filter((c) => {

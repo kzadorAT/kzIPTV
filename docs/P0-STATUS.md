@@ -1,6 +1,6 @@
 # Estado P0 — kzIPTV (spike funcional)
 
-Fecha: 25/10/2026 · Estado: **P0 completa y compilando** · APK: `app-debug.apk` 18,9 MB
+Fecha: 25/10/2026 · Estado: **P0 validada en TV real** · APK: `app-debug.apk` 18,9 MB
 
 La P0 tuvo como objetivo responder "¿esto es viable?" con **código real, no maquetas**:
 app Android TV que arranca, lee la playlist real de iptv-org, reproduce HLS/DASH, hace zapping
@@ -21,7 +21,7 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Grilla de canales | ✅ | Compose for TV, chips de categoría, logo por canal, foco visible |
 | Setup por QR | ✅ | la TV sirve una web por HTTP; QR con `<url>/pair#<codigo>` + código de 6 dígitos |
 | Companion web (celular) | ✅ | Preact + Vite, 19 KB JS: configurar playlist, control remoto, listado, favoritos |
-| API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` |
+| API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` — los endpoints que **modifican** la TV exigen el token que devuelve `/api/pair` |
 | EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3 |
 | Comparar canales (mosaico + PiP) | ❌ | fuera de P0 → P1 |
 | Persistencia Room / multi-lista / PWA | ❌ | fuera de P0 → P1/P2 |
@@ -115,15 +115,49 @@ tools/epg/scripts/fetch-mitv-epg.mjs
 4. **Ktor 3**: `close(CloseReason)` no compila en el scope de WebSocket → se responde un frame de error.
 5. **Parser M3U**: el nombre visible corta en la **primera coma fuera de comillas** (no la última),
    y se toma de la línea `#EXTINF` (no de la URL).
+6. **ANR en la TV real**: el parser de XMLTV usaba un regex con `DOT_MATCHES_ALL` sobre ~2 MB →
+   backtracking catastrófico en el hilo principal (86% CPU, ANR a los 10 s). Se reemplazó por un
+   escáner lineal con `indexOf`, y la lectura + parseo del EPG y de la playlist se movió a
+   `Dispatchers.IO`. El server Ktor pasó a un hilo daemon para no competir con el main thread.
+7. **Media3 exige el hilo con el que se creó**: todo lo que toque el ExoPlayer tiene que correr en
+   el hilo principal. Ktor atiende en hilos de Netty, así que `/api/command` devolvía **HTTP 500**
+   (`IllegalStateException` del player) mientras que el zapping con el control remoto de la TV
+   funcionaba (ese camino llega al main thread). Se agregó `TvController.onMain { }` y todos los
+   comandos del server pasan por ahí.
+8. **Layout del setup**: en vertical el contenido no entraba en 1080p y el código de 6 dígitos
+   quedaba cortado → el setup pasó a **dos columnas** (QR a la izquierda, texto a la derecha).
+9. **Seguridad del companion**: los endpoints mutables (`source`, `favorite`, `command`) ahora
+   exigen el token de emparejamiento; antes cualquiera de la red podía cambiar la playlist.
 
 ---
 
-## 5. Cómo probarlo en la TV
+## 5. Pruebas en la TV real
 
-No hay ninguna TV conectada por ADB desde este entorno, así que la instalación es manual:
+La app se instaló por ADB sobre Wi-Fi en una **TCL Smart TV Pro (Android 11, 1920×1080)** y se
+probó de punta a punta con el companion abierto en un navegador — exactamente lo que hace el
+celular tras escanear el QR.
+
+| Prueba | Resultado |
+|---|---|
+| Arranque con la playlist embebida | ✅ `206 canales · 2474 programas EPG` |
+| Zapping con `CH+`/`CH-` del control de la TV | ✅ cambia de canal (verificado por `/api/state`) |
+| Pantalla de setup | ✅ QR legible + código de 6 dígitos completo (sin cortes) |
+| Emparejar desde el navegador con el código | ✅ 593819 → "Emparejado" |
+| `Canal +` / `Canal −` desde la web | ✅ cambian el canal en la TV |
+| `★ Favorito` desde la web | ✅ la TV marca el favorito y lo persiste |
+| `Zap favoritos` desde la web | ✅ la TV conmuta a modo "solo favoritos" |
+| `Emparejar / QR` desde la web | ✅ la TV abre la pantalla de setup |
+| Tocar un canal en la lista de la web | ✅ la TV salta a ese canal |
+| Listado en la web con EPG | ✅ "Los Jóvenes Titanes en acción", "Rescatando a papá"… |
+| Estabilidad | ✅ sin ANR ni crash (logcat limpio) |
+
+> Nota: `adb screencap` no muestra el video (el player dibuja en un `SurfaceView`); la
+> reproducción se verificó por el estado del player y los banners, no por la captura.
+
+### Cómo instalarlo en otra TV
 
 ```sh
-# 1. en la TV: Configuración →-red → activar ADB debugging (Android TV / Google TV)
+# 1. en la TV: Configuración → red → activar ADB debugging (Android TV / Google TV)
 # 2. en la PC (misma red):
 adb connect <IP-DE-LA-TV>:5555
 adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk

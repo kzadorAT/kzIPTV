@@ -92,7 +92,7 @@ class TvController(
                     status.value = "No pude leer ${source.name}: ${e.message}"
                     null
                 } ?: return@forEach
-                all += M3uParser.parse(content, source.id)
+                all += withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
             }
             applyChannels(all)
             store.update { it.copy(sources = sources, pairingCode = pairingCode.value) }
@@ -114,8 +114,11 @@ class TvController(
 
     private fun loadBundledEpg() {
         scope.launch {
-            val text = withContext(Dispatchers.IO) { readBundledEpgText() } ?: return@launch
-            val programs = EpgParser.parse(text)
+            // Todo el parseo del XMLTV (~2 MB) va en IO: en el hilo principal provocaba ANR.
+            val programs = withContext(Dispatchers.IO) {
+                val text = readBundledEpgText() ?: return@withContext emptyList()
+                EpgParser.parse(text)
+            }
             if (programs.isNotEmpty()) {
                 epg.value = EpgIndex(programs)
                 status.value = "${catalog.value.all.size} canales · ${programs.size} programas EPG"
@@ -146,6 +149,15 @@ class TvController(
             }
         }
         return null
+    }
+
+    /**
+     * Ejecuta en el hilo principal. El ExoPlayer de Media3 exige que se lo use desde
+     * el hilo que lo creo, y el server Ktor atiende los comandos en hilos de Netty:
+     * sin este salto, /api/command devolvia 500 (IllegalStateException del player).
+     */
+    fun onMain(block: () -> Unit) {
+        scope.launch { block() }
     }
 
     fun play(channel: Channel, showBanner: Boolean = true) {

@@ -5,34 +5,91 @@ import ar.kziptv.core.model.EpgProgram
 import java.util.Calendar
 import java.util.TimeZone
 
-/** Parser XMLTV por expresiones regulares (sin dependencias de Android → testeable en JVM). */
+/**
+ * Parser XMLTV sin dependencias de Android (testeable en JVM).
+ *
+ * OJO: el XMLTV completo son ~2 MB. Con regex tipo
+ *   Regex("<programme\\s+([^>]*)>(.*?)</programme>", DOT_MATCHES_ALL)
+ * el backtracking es tan brutal que en una TV de gama baja bloqueaba el hilo
+ * principal mas de 20 s -> ANR. Por eso los bloques se buscan con indexOf
+ * (lineal, sin backtracking) y dentro de cada bloque, que es chico, se usa regex.
+ */
 object EpgParser {
-
-    private val channelTag = Regex("""<channel\s+([^>]*)>(.*?)</channel>""", RegexOption.DOT_MATCHES_ALL)
-    private val programmeTag = Regex("""<programme\s+([^>]*)>(.*?)</programme>""", RegexOption.DOT_MATCHES_ALL)
-    private val attrRegex = Regex("""([A-Za-z0-9_:]+)\s*=\s*"([^"]*)"""")
-    private val titleTag = Regex("""<title[^>]*>(.*?)</title>""", RegexOption.DOT_MATCHES_ALL)
-    private val descTag = Regex("""<desc[^>]*>(.*?)</desc>""", RegexOption.DOT_MATCHES_ALL)
-    private val categoryTag = Regex("""<category[^>]*>(.*?)</category>""", RegexOption.DOT_MATCHES_ALL)
 
     fun parse(xml: String): List<EpgProgram> {
         val programs = mutableListOf<EpgProgram>()
-        programmeTag.findAll(xml).forEach { m ->
-            val attrs = attrRegex.findAll(m.groupValues[1]).associate { it.groupValues[1] to it.groupValues[2] }
-            val channelId = attrs["channel"].orEmpty()
-            val start = parseXmltvTime(attrs["start"].orEmpty()) ?: return@forEach
+        forEachBlock(xml, "programme") { block ->
+            val headerEnd = block.indexOf('>')
+            if (headerEnd <= 0) return@forEachBlock
+            val attrs = parseAttributes(block.substring(0, headerEnd))
+            val channelId = attrs["channel"]?.takeIf { it.isNotBlank() } ?: return@forEachBlock
+            val start = parseXmltvTime(attrs["start"].orEmpty()) ?: return@forEachBlock
             val stop = parseXmltvTime(attrs["stop"].orEmpty()) ?: (start + 3_600_000L)
-            val body = m.groupValues[2]
+            val body = block.substring(headerEnd + 1)
             programs += EpgProgram(
                 channelId = channelId,
                 start = start,
                 stop = stop,
-                title = titleTag.find(body)?.groupValues?.get(1)?.trim().orEmpty(),
-                description = descTag.find(body)?.groupValues?.get(1)?.trim().orEmpty(),
-                category = categoryTag.find(body)?.groupValues?.get(1)?.trim().orEmpty()
+                title = extractTag(body, "title"),
+                description = extractTag(body, "desc"),
+                category = extractTag(body, "category")
             )
         }
         return programs
+    }
+
+    /** Recorre los bloques <tag ...>...</tag> con indexOf: O(n) y sin backtracking. */
+    private inline fun forEachBlock(xml: String, tag: String, action: (String) -> Unit) {
+        val open = "<$tag"
+        val close = "</$tag>"
+        var i = 0
+        while (i < xml.length) {
+            val start = xml.indexOf(open, i)
+            if (start < 0) return
+            val after = xml.getOrNull(start + open.length)
+            if (after != null && after != '>' && !after.isWhitespace()) {
+                i = start + open.length
+                continue
+            }
+            val headerEnd = xml.indexOf('>', start)
+            if (headerEnd < 0) return
+            val end = xml.indexOf(close, headerEnd)
+            if (end < 0) return
+            action(xml.substring(start, end + close.length))
+            i = end + close.length
+        }
+    }
+
+    /** Lee los atributos de la cabecera del tag (sin regex, para no depender del backtracking). */
+    private fun parseAttributes(header: String): Map<String, String> {
+        val out = HashMap<String, String>()
+        val attrs = header.substringAfter(' ', "")
+        var i = 0
+        while (i < attrs.length) {
+            val eq = attrs.indexOf('=', i)
+            if (eq < 0) break
+            val name = attrs.substring(i, eq).trim()
+            val q1 = attrs.indexOf('"', eq)
+            if (q1 < 0) break
+            val q2 = attrs.indexOf('"', q1 + 1)
+            if (q2 < 0) break
+            if (name.isNotEmpty() && name.all { it.isLetterOrDigit() || it == '_' || it == ':' }) {
+                out[name.lowercase()] = attrs.substring(q1 + 1, q2)
+            }
+            i = q2 + 1
+        }
+        return out
+    }
+
+    /** Texto de un tag interno (<title lang="es">...</title>). */
+    private fun extractTag(body: String, tag: String): String {
+        val start = body.indexOf("<$tag")
+        if (start < 0) return ""
+        val headerEnd = body.indexOf('>', start)
+        if (headerEnd < 0) return ""
+        val end = body.indexOf("</$tag>", headerEnd)
+        if (end < 0) return ""
+        return body.substring(headerEnd + 1, end).trim()
     }
 
     /** "20261025183000 +0300" -> epoch ms */
@@ -56,7 +113,7 @@ object EpgParser {
     }
 }
 
-/** Índice de EPG con match exacto y normalizado de tvg-id (A24.ar@SD -> a24.ar). */
+/** Indice de EPG con match exacto y normalizado de tvg-id (A24.ar@SD -> a24.ar). */
 class EpgIndex(val programs: List<EpgProgram>) {
 
     private val byExact: Map<String, List<EpgProgram>> = programs.groupBy { it.channelId.lowercase() }

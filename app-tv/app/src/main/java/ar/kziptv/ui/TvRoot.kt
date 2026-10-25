@@ -287,36 +287,40 @@ fun SetupScreen(controller: TvController) {
     val status by controller.status.collectAsState()
     val bitmap = remember(url, code) { qrBitmap("${url}/pair#${code}", 720) }
 
-    Column(
-        Modifier.fillMaxSize().background(KzBg).padding(40.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+    // En dos columnas: en vertical el contenido no entra en 1080p y el codigo quedaba cortado.
+    Row(
+        Modifier.fillMaxSize().background(KzBg).padding(44.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(48.dp, Alignment.CenterHorizontally)
     ) {
-        Text(text = "Configura kzIPTV desde tu celular", color = Color.White, fontSize = 34.sp)
-        Spacer(Modifier.height(24.dp))
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "QR de emparejamiento",
-                modifier = Modifier.size(360.dp)
-            )
-        } else {
-            Text(text = "QR no disponible", color = Color.Gray, fontSize = 18.sp)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "QR de emparejamiento",
+                    modifier = Modifier.size(320.dp)
+                )
+            } else {
+                Text(text = "QR no disponible", color = Color.Gray, fontSize = 18.sp)
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(text = "Codigo: ${code}", color = KzBlue, fontSize = 30.sp)
+            Text(text = url, color = Color(0xFF9FB0C3), fontSize = 16.sp)
         }
-        Spacer(Modifier.height(20.dp))
-        Text(text = "Codigo: ${code}", color = KzBlue, fontSize = 28.sp)
-        Text(text = url, color = Color(0xFF9FB0C3), fontSize = 18.sp)
-        Spacer(Modifier.height(14.dp))
-        Text(
-            text = "1. Escanea el QR con la camara del celular" +
-                "\n2. Pega la URL de tu playlist m3u (o subi el archivo)" +
-                "\n3. La TV recibe la lista y queda lista para ver",
-            color = Color(0xFF7C8899),
-            fontSize = 16.sp,
-            textAlign = TextAlign.Center
-        )
-        Spacer(Modifier.height(12.dp))
-        Text(text = status, color = Color(0xFF56616F), fontSize = 13.sp)
+        Column(modifier = Modifier.width(480.dp)) {
+            Text(text = "Configura kzIPTV desde tu celular", color = Color.White, fontSize = 32.sp)
+            Spacer(Modifier.height(22.dp))
+            Text(
+                text = "1. Escanea el QR con la camara del celular" +
+                    "\n2. Pega la URL de tu playlist m3u (o subi el archivo)" +
+                    "\n3. La TV recibe la lista y queda lista para ver",
+                color = Color(0xFF7C8899),
+                fontSize = 17.sp,
+                textAlign = TextAlign.Start
+            )
+            Spacer(Modifier.height(18.dp))
+            Text(text = status, color = Color(0xFF56616F), fontSize = 14.sp)
+        }
     }
 }
 

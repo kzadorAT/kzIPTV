@@ -22,8 +22,14 @@ class EpgBundleTest {
 
     @Test
     fun elEpgEmpaquetadoTraeProgramas() {
-        val programs = EpgParser.parse(bundledEpg())
+        val xml = bundledEpg()
+        val t0 = System.currentTimeMillis()
+        val programs = EpgParser.parse(xml)
+        val ms = System.currentTimeMillis() - t0
+        println("parseo del EPG (${xml.length} chars): ${programs.size} programas en ${ms} ms")
         assertTrue("el EPG deberia traer programs (fue ${programs.size})", programs.size > 1000)
+        // Con el parser por regex esto tardaba >20 s en la TV (ANR).
+        assertTrue("el parseo tardo ${ms} ms, deberia ser < 3000 ms", ms < 3000)
     }
 
     @Test

@@ -28,7 +28,12 @@ class MainActivity : ComponentActivity() {
 
         controller = TvController(this, store, repository, player)
         controller.bootstrap()
-        server = EmbeddedServer(this, controller, store).also { it.start() }
+
+        // Netty carga muchas clases al arrancar: si eso corre en el main thread, la TV
+        // tira ANR por el timeout de input. Se levanta en un hilo propio.
+        val srv = EmbeddedServer(this, controller, store)
+        server = srv
+        Thread({ srv.start() }, "kziptv-server").apply { isDaemon = true }.start()
 
         setContent {
             KzTheme {
