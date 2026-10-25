@@ -1,0 +1,9 @@
+.tools/
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+node_modules/
+dist/
+app-tv/app/src/main/assets/companion/

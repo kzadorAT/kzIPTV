@@ -1,0 +1,13 @@
+{
+  "name": "kziptv-epg-tools",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-epg.mjs",
+    "fetch": "node scripts/fetch-mitv-epg.mjs"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
