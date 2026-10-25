@@ -23,7 +23,8 @@ data class PersistedState(
     val favorites: List<String> = emptyList(),
     val zapFavoritesOnly: Boolean = false,
     val pairingCode: String = "",
-    val tokens: List<String> = emptyList()
+    val tokens: List<String> = emptyList(),
+    val lastChannelId: String = ""
 )
 
 class KzStore(context: Context) {

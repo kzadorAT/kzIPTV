@@ -17,6 +17,8 @@ type StateDto = {
   pairingCode: string;
   serverUrl: string;
   status: string;
+  playbackState: string;
+  playbackError: string;
   currentId: string | null;
   zapFavoritesOnly: boolean;
   channelCount: number;
@@ -223,6 +225,9 @@ export function App() {
             }} placeholder="nombre del canal" />
           </div>
           <p class="msg">{state ? state.status : ""}</p>
+      {state && state.playbackError ? (
+        <p class="msg err">Error de reproducción: {state.playbackError}</p>
+      ) : null}
         </section>
       )}
 

@@ -46,7 +46,11 @@ data class StateDto(
     val zapFavoritesOnly: Boolean = false,
     val channelCount: Int = 0,
     val categories: List<String> = emptyList(),
-    val channels: List<ChannelDto> = emptyList()
+    val channels: List<ChannelDto> = emptyList(),
+    val playbackState: String = "idle",
+    val playbackError: String = "",
+    val videoWidth: Int = 0,
+    val videoHeight: Int = 0
 )
 
 class TvController(
@@ -70,10 +74,54 @@ class TvController(
     val pairingCode = MutableStateFlow(store.state.value.pairingCode.ifBlank { generateCode() })
     val zapFavoritesOnly = MutableStateFlow(store.state.value.zapFavoritesOnly)
     val focusedChannelId = MutableStateFlow<String?>(null)
+    val playbackState = MutableStateFlow("idle")
+    val playbackError = MutableStateFlow("")
+    val videoWidth = MutableStateFlow(0)
+    val videoHeight = MutableStateFlow(0)
 
     private var bannerJob: Job? = null
+    private var autoSkipJob: Job? = null
+    private var consecutiveFailures = 0
+
+    /** Arranque del controller: sirve para medir fases (KzStartup). */
+    private val bootAt = android.os.SystemClock.elapsedRealtime()
+
+    init {
+        // El player avisa por aca: los errores se muestran en pantalla y se salta al
+        // canal siguiente, para no dejar al usuario frente a una pantalla negra.
+        player.onStateChanged = { state ->
+            if (state == "ready" || state == "playing") {
+                consecutiveFailures = 0
+                playbackError.value = ""
+            }
+            playbackState.value = state
+        }
+        player.onError = { message -> onPlaybackError(message) }
+        player.onVideoSize = { w, h ->
+            videoWidth.value = w
+            videoHeight.value = h
+        }
+    }
+
+    private fun onPlaybackError(message: String) {
+        consecutiveFailures++
+        playbackState.value = "error"
+        playbackError.value = message
+        val name = current.value?.name ?: "ese canal"
+        status.value = "\u26A0 $name no se reproduce ($message)"
+        autoSkipJob?.cancel()
+        if (consecutiveFailures <= MAX_AUTO_SKIP) {
+            autoSkipJob = scope.launch {
+                delay(1800)
+                zap(1)
+            }
+        } else {
+            status.value = "\u26A0 Ningun canal responde. Revisa la conexion o la playlist."
+        }
+    }
 
     companion object {
+        const val MAX_AUTO_SKIP = 6
         const val BUNDLED_ID = "bundled-ar"
         const val BUNDLED_URL = "https://iptv-org.github.io/iptv/countries/ar.m3u"
     }
@@ -96,12 +144,17 @@ class TvController(
             }
             applyChannels(all)
             store.update { it.copy(sources = sources, pairingCode = pairingCode.value) }
+            android.util.Log.i("KzStartup", "playlist lista en " + (android.os.SystemClock.elapsedRealtime() - bootAt) + " ms (" + all.size + " canales)")
             loadBundledEpg()
             if (all.isEmpty()) {
                 screen.value = Screen.SETUP
             } else {
-                val first = catalog.value.numbered.firstOrNull { it.playable }
-                if (first != null) play(first, showBanner = false)
+                // Retoma el ultimo canal que se estaba viendo; si no, el primero disponible.
+                val list = catalog.value.numbered
+                val lastId = store.state.value.lastChannelId
+                val target = list.firstOrNull { it.id == lastId && it.playable }
+                    ?: list.firstOrNull { it.playable }
+                if (target != null) play(target, showBanner = false)
             }
         }
     }
@@ -123,6 +176,7 @@ class TvController(
                 epg.value = EpgIndex(programs)
                 status.value = "${catalog.value.all.size} canales · ${programs.size} programas EPG"
             }
+            android.util.Log.i("KzStartup", "EPG listo en " + (android.os.SystemClock.elapsedRealtime() - bootAt) + " ms")
         }
     }
 
@@ -168,6 +222,9 @@ class TvController(
         player.play(channel)
         current.value = channel
         screen.value = Screen.PLAYER
+        playbackState.value = "buffering"
+        playbackError.value = ""
+        store.update { it.copy(lastChannelId = channel.id) }
         if (showBanner) showBanner()
     }
 
@@ -278,6 +335,10 @@ class TvController(
             status = status.value,
             currentId = current.value?.id,
             zapFavoritesOnly = zapFavoritesOnly.value,
+            playbackState = playbackState.value,
+            playbackError = playbackError.value,
+            videoWidth = videoWidth.value,
+            videoHeight = videoHeight.value,
             channelCount = catalog.value.all.size,
             categories = catalog.value.categories,
             channels = catalog.value.numbered.map { channel ->

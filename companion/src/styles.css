@@ -73,6 +73,7 @@ button.primary { background: var(--blue); color: #06131c; border-color: transpar
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 
 .msg { color: var(--muted); font-size: 13px; min-height: 18px; margin: 12px 0 0; }
+.msg.err { color: #ff8a80; }
 
 .channels { list-style: none; margin: 12px 0 0; padding: 0; max-height: 62vh; overflow: auto; }
 .channels li {

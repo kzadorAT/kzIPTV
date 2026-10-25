@@ -23,6 +23,8 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Companion web (celular) | ✅ | Preact + Vite, 19 KB JS: configurar playlist, control remoto, listado, favoritos |
 | API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` — los endpoints que **modifican** la TV exigen el token que devuelve `/api/pair` |
 | EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3 |
+| Robustez de reproducción | ✅ | error visible en pantalla, salto automático al canal siguiente, retoma el último canal al abrir. Ver §7 |
+| Variantes / selector de calidad | ❌ | fuera de P0 → P1 (diseño en `docs/PLAN.md` §5) |
 | Comparar canales (mosaico + PiP) | ❌ | fuera de P0 → P1 |
 | Persistencia Room / multi-lista / PWA | ❌ | fuera de P0 → P1/P2 |
 
@@ -179,10 +181,66 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 
 ## 6. Qué sigue (P1, en orden de valor)
 
-1. **Mosaico + PiP** (lo único grande que falta del pedido original): miniaturas de N canales +
+1. **Agrupar canales duplicados + selector de calidad con fallback** (§5 del plan): hoy la misma
+   señal aparece 2-4 veces (distinta región/resolución) y el primer feed puede estar muerto.
+   Con agrupación, el zapping recorre canales lógicos y la app cae en una variante viva.
+2. **Mosaico + PiP** (lo único grande que falta del pedido original): miniaturas de N canales +
    PiP con un 2.º decoder.
-2. **EPG siempre fresco**: la app baja `epg/ar.xml.gz` del repo en background y cachea en Room.
-3. **Room + multi-lista**: playlists propias, guardado de EPG, historial.
-4. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
-5. **Epg de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
-6. Release firmado + distribución (sideload por QR / Play private track).
+3. **EPG siempre fresco**: la app baja `epg/ar.xml.gz` del repo en background y cachea en Room
+   (y lo parsea una sola vez, no en cada arranque).
+4. **Room + multi-lista**: playlists propias, guardado de EPG, historial.
+5. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
+6. **EPG de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
+7. Release firmado + distribución (sideload por QR / Play private track).
+
+---
+
+## 7. La pantalla negra: causa raíz y arreglo
+
+**Síntoma**: al abrir la app (o después de cerrar y reabrir) la TV quedaba negra, con el texto
+"206 canales · 2474 programas EPG" abajo a la izquierda.
+
+**Causa raíz** (no era la UI): el canal que la app reproduce al abrir es el **#1 del catálogo**,
+`Cartoon Network Latin America`, y su stream responde **HTTP 403 desde cualquier cliente**
+(curl con UA de navegador, con UA de la app, con sus propios headers EXTVLCOPT: 403).
+El mismo canal existe en otro feed — `Cartoon Network Latin America South Atlantic (1080p)` —
+que responde **200**.
+
+O sea: **no era un bug de reproducción sino un feed muerto**, y la app no lo decía: el error
+del player no se mostraba, así que la TV quedaba en negro sin explicación.
+
+**Arreglo**:
+
+- El player ahora reporta estado y error (`Player.Listener`): `buffering` / `playing` / `error`.
+- El error se ve en pantalla ("⚠ Este canal no se pudo reproducir — Response code: 403") y en la
+  web del companion.
+- **Salto automático**: si el canal falla, al cabo de 1,8 s se prueba el siguiente (hasta 6 fallos
+  seguidos; después avisa que no responde ninguno).
+- **Retoma el último canal** al abrir (persistido en el store), en vez de empezar siempre por el #1.
+- `/api/state` expone `playbackState`, `playbackError` y `videoWidth/videoHeight`.
+
+**Verificado en la TV**:
+
+```
+t+0s  buffering   → Cartoon Network Latin America
+t+4s  error 403   → el error se muestra en pantalla
+t+6s  auto-saltó  → Cartoon Network Latin America South Atlantic (1080p)
+t+8s  playing     → video 1280×720 decodificando
+```
+
+Este caso es exactamente el que resuelve la **agrupación de variantes + calidad** (P1): con
+fallback entre variantes, la app cae en "South Atlantic (1080p)" sin cambiar de canal.
+
+### Rendimiento medido (TCL, Android 11, build debug)
+
+| Métrica | Valor |
+|---|---|
+| Arranque en frío | 5,75 s |
+| Primer frame | 3,34 s |
+| Playlist (206 canales) | 2,64 s |
+| EPG (2.474 programas) | 7,10 s (background) |
+| Memoria PSS | 138 MB |
+| Reproducción | 1280×720 ✓ |
+
+La estrategia de optimización (medir primero, optimizar de a pares con cada feature, y no tocar
+el main thread) está en `docs/PLAN.md` §13.

@@ -120,6 +120,43 @@ flowchart LR
 - Búsqueda: índice local (nombre + categoría) + teclado Compose TV + escribir desde el celu.
 - Numeración: automática (alfabético / por categoría) o manual desde el celu.
 
+### Variantes de canal y calidad (P1)
+
+**El problema, medido**: la misma señal aparece varias veces con distinta resolución o región.
+Ejemplos reales de `ar.m3u` (206 entradas):
+
+| Entrada | Estado |
+|---|---|
+| `Cartoon Network Latin America` | **403 desde cualquier cliente** (feed muerto) |
+| `Cartoon Network Latin America South Atlantic (1080p)` | 200 ✓ |
+| `Disney Channel Latin America (1080p)` | feed propio |
+| `Disney Channel Latin America Panregional HD (1080p)` | otro feed |
+
+Son **el mismo canal**, no canales distintos: hoy ocupan 4 lugares de la grilla, se zapan por
+separado y el primero que se reproduce puede estar muerto (pantalla negra).
+
+**Diseño**:
+
+1. **Agrupar**: un *canal lógico* = un nombre base + sus *variantes*.
+   - Clave primaria: el `tvg-id` sin el calificador (`DisneyChannelLatinAmerica.us@PanregionalHD`
+     → `DisneyChannelLatinAmerica.us`).
+   - Clave secundaria (sin tvg-id útil): nombre normalizado, sacando tokens de calidad y región
+     (`(1080p)`, `(720p)`, `HD`, `SD`, `4K`, `H265`, `[Not 24/7]`, "Panregional",
+     "South Atlantic"). Dos nombres solo se agrupan si uno contiene al otro tras normalizar
+     (evita unir canales distintos que se parecen).
+2. **Variante**: cada feed conserva su URL, headers, tipo y etiqueta (región + resolución).
+3. **Selector de calidad**: la tarjeta del canal muestra un badge (`720p`, `1080p`, `Auto`)
+   y el número de variantes (`3 calidades`); **OK** sobre el badge abre la lista de variantes.
+   El banner muestra la calidad activa. La default es *la más alta que funcione*.
+4. **Fallback entre variantes**: si la variante activa falla (403/timeout), se prueban las otras
+   variantes **del mismo canal** antes de pasar al canal siguiente. Con esto, el caso de arriba
+   reproduce "Cartoon Network Latin America" y cae en "South Atlantic (1080p)" sin salir del canal.
+5. **Estado por variante**: `ok / muerto / lento`, cacheado (el esquema de Room ya tiene
+   `estado` en `channels`). Las variantes muertas no se reintentan hasta el próximo health check.
+
+**Por qué no es "cosmetics"**: hoy la primera reproducción de la app es un canal muerto (403) y
+deja la pantalla negra. Con agrupación + fallback, el arranque cae siempre en un canal vivo.
+
 ### Comparar canales (ambos modos)
 **Mosaico "Surf"** (P2): grilla 4×3 con miniaturas refrescadas cada 30-60 s **solo de la página visible**; la tarjeta enfocada se agranda con preview + ahora/siguiente; OK sintoniza. Implementación on-device: worker secuencial que reproduce cada canal muteado 1-2 s a 320×180 sobre un ImageReader (2.ª instancia de ExoPlayer), captura un frame y cierra; timeout de 6 s y máximo 1 job a la vez (plan B: binario ffmpeg estático si algún SoC da problemas).
 
@@ -184,7 +221,7 @@ kzIPTV/
 | Fase | Duración | Entregable | Criterio de salida |
 |---|---|---|---|
 | **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | reproducción fluida en tus TVs · zap < 2.5 s · teclas OK · XMLTV AR generado y matchea |
-| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room | setup desde el celu en < 1 min · zap y favoritos usables a diario |
+| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | setup desde el celu en < 1 min · zap y favoritos usables a diario · la app nunca queda en negro por un feed muerto |
 | **P2 · Guía y comparación** | 2-3 sem | EPG ahora/siguiente + grilla, mosaico on-device, PiP, celu como control remoto, health check | grilla usable · mosaico sin lag perceptible · PiP en tus SoC (o fallback) |
 | **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | — |
 
@@ -205,3 +242,46 @@ kzIPTV/
 4. Hello-world del server embebido (Ktor) + QR en pantalla, abierto desde el celu.
 
 Con P0 en verde, arrancamos P1 con el esqueleto completo (app + companion + workflow).
+
+---
+
+## 13 · Rendimiento: qué medimos y cuándo optimizar
+
+**Medido en la TCL Smart TV Pro (Android 11), build debug, arranque en frío:**
+
+| Fase | Tiempo |
+|---|---|
+| Arranque en frío total (`am start -W`) | **5,75 s** |
+| Crear ExoPlayer + controller | 811 ms |
+| Primer frame en pantalla | 3,34 s |
+| Playlist (206 canales) parseada | 2,64 s |
+| EPG (2.474 programas) parseado | 7,10 s (en background, no bloquea la UI) |
+| Memoria (PSS) | 138 MB (Java 28 MB · Native 25 MB) |
+| Reproducción | 1280×720 decodificando ✓ |
+
+**Estrategia: optimizar mientras se implementa, pero midiendo primero.** La razón es que en una
+app de TV casi todo lo que "se siente lento" es arranque, zapping o memoria, y esos tres los
+deciden las features (cuántos decoders, cuántas listas, qué tan grande el EPG). Optimizar al
+final significaría re-diseñar el mosaico cuando ya esté hecho.
+
+Reglas que sí se respetan desde ya (invariantes, no micro-optimizaciones):
+
+1. **Nunca parsear ni descargar en el main thread** (ya quedó: playlist y EPG van en `Dispatchers.IO`).
+2. **Un solo ExoPlayer reutilizado**: el zapping no recrea el player ni el codec.
+3. **El server Ktor en hilo daemon**: Netty no compite con el main thread.
+4. **Medir antes de tocar**: cada cambio de performance se verifica con `am start -W`,
+   `dumpsys meminfo` y `dumpsys gfxinfo` en la TV real, no en el emulador.
+5. **Lo que falta medir en release**: el build debug no tiene R8 → un build con `minifyEnabled`
+   va a ser sensiblemente más rápido. El número honesto de arranque se mide sobre release.
+6. **El presupuesto de decoders** se decide antes de hacer el mosaico: el PiP + el mosaico usan
+   un 2.º decodificador, y eso fija el techo de calidad (720p en miniatura, no 1080p).
+
+**Backlog de rendimiento (por impacto, no por fecha):**
+
+| Ítem | Ganancia estimada | Cuándo |
+|---|---|---|
+| Parseo del EPG en background + cache en disco (evita reparsear 2 MB en cada arranque) | −4 s de CPU al arrancar | P1, junto con el EPG fresco |
+| Build release con R8 + `baselineProfile` | −30-50% del arranque | antes de distribuir |
+| Pre-calentar DNS/TLS del canal siguiente | −0,5-1,5 s de latencia de zap | P1 |
+| Reciclado de imágenes en la grilla (Coil ya lo hace) + `LazyGrid` con keys estables | evita jank al scrollear | P1 |
+| Presupuesto de decoders para mosaico/PiP | define el techo de calidad | P2 |

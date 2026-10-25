@@ -3,6 +3,9 @@ package ar.kziptv.playback
 import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
@@ -32,6 +35,47 @@ class PlayerManager(context: Context) {
     val exo: ExoPlayer = ExoPlayer.Builder(context.applicationContext)
         .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
         .build()
+
+    /** Estado del player ("buffering", "playing", "error"...). */
+    var onStateChanged: ((String) -> Unit)? = null
+
+    /** Error de reproduccion, ya en texto legible ("Response code: 403"). */
+    var onError: ((String) -> Unit)? = null
+
+    /** Resolucion real del video decodificado (0 si todavia no hay frames). */
+    var onVideoSize: ((Int, Int) -> Unit)? = null
+
+    init {
+        exo.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val name = when (playbackState) {
+                    Player.STATE_BUFFERING -> "buffering"
+                    Player.STATE_READY -> "ready"
+                    Player.STATE_ENDED -> "ended"
+                    else -> "idle"
+                }
+                onStateChanged?.invoke(name)
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) onStateChanged?.invoke("playing")
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                onError?.invoke(describe(error))
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                onVideoSize?.invoke(videoSize.width, videoSize.height)
+            }
+        })
+    }
+
+    private fun describe(error: PlaybackException): String {
+        val cause = generateSequence(error.cause) { it.cause }.lastOrNull()
+        val detail = cause?.message?.lineSequence()?.firstOrNull()?.trim().orEmpty()
+        return detail.ifBlank { error.errorCodeName }
+    }
 
     fun play(channel: Channel) {
         requestHeaders = channel.headers

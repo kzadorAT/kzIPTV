@@ -21,12 +21,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val t0 = android.os.SystemClock.elapsedRealtime()
 
         val store = KzStore(this)
         val repository = SourceRepository(this)
         val player = PlayerManager(this)
 
         controller = TvController(this, store, repository, player)
+        android.util.Log.i("KzStartup", "player+controller: " + (android.os.SystemClock.elapsedRealtime() - t0) + " ms")
         controller.bootstrap()
 
         // Netty carga muchas clases al arrancar: si eso corre en el main thread, la TV
@@ -39,6 +41,9 @@ class MainActivity : ComponentActivity() {
             KzTheme {
                 TvRoot(controller)
             }
+        }
+        window.decorView.post {
+            android.util.Log.i("KzStartup", "primer frame: " + (android.os.SystemClock.elapsedRealtime() - t0) + " ms")
         }
     }
 

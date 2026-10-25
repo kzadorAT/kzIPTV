@@ -78,6 +78,8 @@ fun PlayerScreen(controller: TvController) {
     val banner by controller.bannerVisible.collectAsState()
     val favorites by controller.favorites.collectAsState()
     val status by controller.status.collectAsState()
+    val playbackState by controller.playbackState.collectAsState()
+    val playbackError by controller.playbackError.collectAsState()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -103,6 +105,40 @@ fun PlayerScreen(controller: TvController) {
                 channel = current!!,
                 favorite = favorites.contains(current!!.id),
                 controller = controller
+            )
+        }
+
+        when (playbackState) {
+            "buffering" -> CenterOverlay(
+                title = "Cargando canal\u2026",
+                detail = current?.name.orEmpty(),
+                color = Color.White
+            )
+            "error" -> CenterOverlay(
+                title = "\u26A0 Este canal no se pudo reproducir",
+                detail = "$playbackError\nBuscando otro canal\u2026",
+                color = Color(0xFFFF8A80)
+            )
+        }
+    }
+}
+
+/** Mensaje centrado sobre el video (carga / error). */
+@Composable
+private fun CenterOverlay(title: String, detail: String, color: Color) {
+    Column(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(text = title, color = color, fontSize = 26.sp, textAlign = TextAlign.Center)
+        if (detail.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = detail,
+                color = Color.White.copy(alpha = 0.72f),
+                fontSize = 16.sp,
+                textAlign = TextAlign.Center
             )
         }
     }
