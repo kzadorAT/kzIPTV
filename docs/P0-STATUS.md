@@ -83,6 +83,8 @@ tools/epg/scripts/fetch-mitv-epg.mjs
 ```
 
 - Salida: `epg/ar.xml.gz` (176 KB) → empaquetada en los assets de la app
+  - Ojo: AGP **descomprime** los assets `.gz` al empaquetar (en el APK queda `assets/epg/ar.xml`),
+    por eso la app prueba las dos variantes y detecta el gzip por sus magic bytes.
 - CI: `.github/workflows/epg.yml` corre **todos los lunes** (gratis con GitHub Actions), publica
   `epg/ar.xml.gz` y el reporte. En P1 la app lo baja sola desde `raw.githubusercontent`.
 - `tools/epg/scripts/measure-epg-sources.mjs` mide la cobertura de *todas* las fuentes de

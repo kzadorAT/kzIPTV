@@ -114,21 +114,38 @@ class TvController(
 
     private fun loadBundledEpg() {
         scope.launch {
-            val text = withContext(Dispatchers.IO) {
-                try {
-                    context.assets.open("epg/ar.xml.gz").use { input ->
-                        GZIPInputStream(input).use { it.readBytes().toString(Charsets.UTF_8) }
-                    }
-                } catch (e: Exception) {
-                    null
-                }
-            } ?: return@launch
+            val text = withContext(Dispatchers.IO) { readBundledEpgText() } ?: return@launch
             val programs = EpgParser.parse(text)
             if (programs.isNotEmpty()) {
                 epg.value = EpgIndex(programs)
                 status.value = "${catalog.value.all.size} canales · ${programs.size} programas EPG"
             }
         }
+    }
+
+    /**
+     * El EPG puede llegar como .gz (build local) o ya descomprimido por AGP al empaquetar:
+     * dentro del APK el asset "epg/ar.xml.gz" queda como "assets/epg/ar.xml".
+     * Se prueban las dos variantes y se detecta el gzip por sus magic bytes.
+     */
+    private fun readBundledEpgText(): String? {
+        for (name in listOf("epg/ar.xml", "epg/ar.xml.gz")) {
+            try {
+                context.assets.open(name).use { input ->
+                    val bytes = input.readBytes()
+                    val gzip = bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte()
+                    val text = if (gzip) {
+                        GZIPInputStream(bytes.inputStream()).use { it.readBytes().toString(Charsets.UTF_8) }
+                    } else {
+                        bytes.toString(Charsets.UTF_8)
+                    }
+                    if (text.contains("<programme")) return text
+                }
+            } catch (e: Exception) {
+                // siguiente candidato
+            }
+        }
+        return null
     }
 
     fun play(channel: Channel, showBanner: Boolean = true) {
