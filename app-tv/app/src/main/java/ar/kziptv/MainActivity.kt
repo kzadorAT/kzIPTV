@@ -191,6 +191,12 @@ class MainActivity : ComponentActivity() {
         controller.release()
         controller.player.release()
         finishAndRemoveTask()
+
+        // finishAndRemoveTask() saca la activity y la tarea del launcher, pero Android
+        // puede dejar el proceso vivo como cacheado (pidof sigue devolviendo el PID).
+        // Los recursos ya estan sueltos: terminamos el proceso para que la salida sea
+        // real y no deje el server ni ~100 MB de memoria cacheada.
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 
     override fun onDestroy() {
