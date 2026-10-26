@@ -1,15 +1,17 @@
 # HANDOVER - kzIPTV (para retomar en un chat nuevo)
 
-> Fecha de corte: **26/10/2026** (tarde, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
-> - Working tree **limpio** y todo comiteado (ultimo commit funcional: `f17ae64`).
+> Fecha de corte: **26/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
+> - Working tree **limpio** y todo comiteado (ultimo commit funcional: `2c44150`).
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
 > los limites fisicos de la TV y la lista de lo que falta.
 >
-> **Resumen de la sesion que se cerro (26/10/2026 tarde):** se implemento y verifico en la TV real
-> el scroll de la grilla, el cartel de estado transitorio y la pantalla **AJUSTES** con el server web
-> apagable. Detalle exacto en la seccion 12.
+> **Resumen de la sesion que se cerro (26/10/2026 noche):** se implemento y verifico en la TV real
+> el **EPG fresco**: la app baja la guia de una URL configurable, la cachea en disco (24 h) y en
+> Room (SHA-256) y actualiza la guia en caliente sin reinstalar la app. Nuevo endpoint
+> `POST /api/epg`, campo en el companion y fila "Guia EPG" en Ajustes. La sesion anterior (tarde:
+> scroll de la grilla, cartel de estado y pantalla AJUSTES) esta en la seccion 12; esta en la 13.
 
 ---
 
@@ -317,7 +319,10 @@ Como trabajar alrededor:
 - `POST /api/pair` `{code}` -> `{ok, token}` (el token se guarda en la TV).
 - `POST /api/source` `{url|content, name, token}` -> cambia la playlist.
 - `POST /api/favorite` `{channelId, enabled, token}`.
-- `POST /api/command` `{type, ...}` -> `key, zap, play, variant, quality, favorite, text, search, category, grid, mosaic`.
+- `POST /api/epg` `{url, token}` -> guarda la URL de la guia EPG (vacio = vuelve a la embebida) y la
+  recarga al vuelo; responde `{ok, message, programCount, source}`.
+- `POST /api/command` `{type, ...}` -> `key, zap, play, variant, quality, favorite, text, search, category, grid, mosaic, epg`.
+  El comando `epg` con `text` = URL cambia la guia; sin `text` = fuerza la recarga.
 - `WS /ws?token=` -> estado por push + comandos.
 
 **Todos los endpoints que modifican exigen el token** (401 si no).
@@ -335,11 +340,11 @@ Como trabajar alrededor:
    recibe `state = gridState` y el scroll desplaza lo justo (calcula el paso de fila con los items
    visibles). Verificado en la TV: el foco ya no se sale de la pantalla. Commit `5de8a5f`.
 3. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
-4. **EPG fresco** — **en curso (26/10/2026, este chat)**: la app baja la guia de una URL
+4. ~~**EPG fresco**~~ **Hecho (26/10/2026 noche):** la app baja la guia de una URL
    configurable (la que publica el pipeline semanal), la cachea en disco (TTL 24 h) y en Room
    (fingerprint SHA-256), y actualiza la guia en caliente sin reinstalar la app. La URL se cambia
-   desde el celular (companion) o por API; en Ajustes aparece la fila "Guia EPG".
-   Diseno completo en `docs/PLAN.md` §16.
+   desde el celular (companion) o por API (`POST /api/epg`); en Ajustes aparece la fila "Guia EPG".
+   Commit `2c44150`, verificado en la TV real: seccion 13. Diseno completo en `docs/PLAN.md` §16.
 5. **Multi-lista** y selector de lista en la TV.
 6. **Ver despues** / cola de reproduccion.
 7. **Release firmado + R8 + baselineProfile** (el arranque en debug es 5,75 s; en release baja).
@@ -457,7 +462,67 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 
 1. Elegir **un** pendiente del P1 de la seccion 9 (los de mas valor: **refresh de playlist con diff**
    o **EPG fresco descargado del repo**) y anotarlo en `docs/PLAN.md` antes de tocar codigo.
+   (Actualizado: el **EPG fresco** quedo hecho en la sesion de la noche, ver seccion 13.)
 2. La **guia lineal de EPG** es P2: usarla como ejercicio de diseno del ticker, no mezclarla con el P1.
+
+---
+
+## 13 - Cierre de la sesion (26/10/2026 noche): EPG fresco, verificado en la TV real
+
+### Que se implemento (`2c44150`)
+
+1. **Descarga remota de la guia** (`core/epg/EpgSource.kt` + `data/EpgRepository.kt`): la URL se
+   guarda en Room (`app_settings.epgUrl`, esquema **v4**), se baja con OkHttp (15 s de conexion,
+   60 s de lectura, sigue redirecciones), se gunzipea si hace falta y se parsea **en
+   `Dispatchers.IO`**. Tope de 32 MB y solo URLs `http/https`.
+2. **Dos caches**: el **archivo crudo** en `cacheDir/epg/ar.xml.gz` (TTL **24 h**) y los
+   **programas parseados** en Room (`epg_programs` + `epg_cache_meta`, clave unica `active` con el
+   fingerprint SHA-256 del XMLTV).
+3. **Actualizacion en caliente**: la guia cambia sin reinstalar ni reiniciar la app; con la URL
+   vacia sigue la **embebida**.
+4. **Fallback**: si la descarga falla se queda con la guia que ya estaba en pantalla (y solo cae a
+   la embebida si no hay ninguna).
+5. **API + companion**: `POST /api/epg` `{url, token}` y comando WS `epg` (con `text` = URL, sin
+   `text` = recargar). El companion (celular) tiene el campo **"URL de la guia EPG"** en la pestana
+   *Configurar* y el boton **"Guia EPG"** en *Control*.
+6. **Fila "Guia EPG" en AJUSTES** (5 filas): muestra `Sin URL (embebida)` o la URL configurada, y
+   con OK fuerza la recarga. El pie de la pantalla muestra `Guia: embebido|remoto`.
+7. **Tests**: 6 tests nuevos en `EpgSourceTest` (gunzip, TTL, fingerprint, URL) y la migracion de
+   Room sube a **v4** (el test instrumentado migra 1→4 y verifica que `epgUrl` viene vacio).
+
+### Verificado en la TV real (TCL Smart TV Pro, `192.168.1.18`)
+
+| Prueba | Resultado |
+|---|---|
+| Arranque en frio (app nueva) | `EPG listo en 9.957 ms (parse)` → 2.474 programas |
+| Arranque con cache de Room | `EPG listo en 5.518 ms (cache)` |
+| Descarga desde la PC (`http://192.168.1.17:8099/ar.xml.gz`) | `EPG remoto listo en 5.510 ms (descarga + parseo, 2.475 programas)`; el canal "24/7 Canal de Noticias" mostro el titulo del archivo remoto |
+| URL rota (404) | `W No se pudo actualizar la guia EPG remota: HTTP 404` → **la guia sigue en pantalla** (no se cae) |
+| Volver a una guia valida | `EPG remoto listo en 4.078 ms (descarga + parseo, 2.474 programas)` |
+| Reinicio de la app | la URL configurada **sobrevive** (viene de Room) y el arranque usa el cache de disco: `EPG remoto listo en 831 ms (cache disco + cache Room)` |
+| Companion web | el campo "URL de la guia EPG" aparece con la URL de la TV y el boton "Actualizar" responde |
+| Ajustes | la 5a fila "Guia EPG" entra completa en la pantalla (hubo que bajar el padding) |
+| Tests | **82 unitarios verdes** + **5 instrumentados** verdes en la TV |
+
+### Estado al dejar esta sesion
+
+- Working tree **limpio**, todo comiteado (`2c44150` + el commit de docs de esta sesion).
+- La app queda **instalada** en la TV, con la **guia embebida** (la URL de prueba se limpio) y el
+  server web **apagado**.
+- Ojo: `gradle connectedDebugAndroidTest` **desinstala** la app de la TV al terminar (por eso hay
+  que reinstalar el APK).
+- Los servidores `python -m http.server` usados para la prueba se apagaron; el EPG real esta en
+  `epg/ar.xml.gz`, en el repo.
+
+### Por donde seguir (proximo chat)
+
+1. **Refresh de playlist con diff** (el otro pendiente de P1): recargar la M3U preservando
+   favoritos, ocultos y numeracion por `tvg-id`.
+2. **Publicar el repo** (hoy `git remote -v` no trae ningun remoto) y dejar la URL por defecto de la
+   guia (`https://raw.githubusercontent.com/<owner>/<repo>/main/epg/ar.xml.gz`) ya sea como valor
+   inicial en el companion o como default en la app.
+3. La **guia lineal de EPG** (P2) y el **selector de lista** (P1) siguen pendientes.
+
 3. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
 4. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
    `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.

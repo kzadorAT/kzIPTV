@@ -22,12 +22,12 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Setup por QR | ✅ | la TV sirve una web por HTTP; QR con `<url>/pair#<codigo>` + código de 6 dígitos |
 | Companion web (celular) | ✅ | Preact + Vite, 19 KB JS: configurar playlist, control remoto, listado, favoritos |
 | API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` — los endpoints que **modifican** la TV exigen el token que devuelve `/api/pair` |
-| EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3 |
+| EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3. **Guía fresca (hecho en P1):** la app la baja de una URL configurable, la cachea en disco y en Room y la actualiza en caliente (ver §14) |
 | Robustez de reproducción | ✅ | error visible en pantalla, salto automático al canal siguiente, retoma el último canal al abrir. Ver §7 |
 | Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
 | Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
 | Comparar canales (mosaico de miniaturas) | ✅ | **hecho en P1**: grilla de 16 tiles con un frame congelado por canal. **No hay PiP en Android TV** y el decoder de hardware es único → se congela un frame por canal, no se transmiten varios streams (ver §10) |
-| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema v3, import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
+| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema v4 (con la URL de la guía EPG), import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
 
 ---
 
@@ -641,3 +641,34 @@ la sesión se frena; la TV puede quedar sin responder a `adb connect` aunque la 
 perfecta. Para capturas: `adb shell screencap -p /sdcard/s.png` → `adb pull` → leer el archivo,
 y para verificar estado usar `/api/state` (JSON) en vez de una imagen. El detalle está en
 [docs/HANDOVER.md](HANDOVER.md) §7.
+
+---
+
+## 14 · EPG fresco: la guía se actualiza sin reinstalar (26/10/2026 noche)
+
+La guía venía embebida en el APK, así que actualizarla exigía compilar y reinstalar. Ahora la TV
+**baja la guía de una URL configurable** y la cambia en caliente.
+
+| Pieza | Qué hace |
+|---|---|
+| `core/epg/EpgSource.kt` | gunzip, validación (tiene que ser XMLTV), TTL de 24 h y fingerprint SHA-256 |
+| `data/EpgRepository.kt` | descarga con OkHttp (15 s/60 s, sigue redirecciones, tope de 32 MB) + archivo crudo en `cacheDir/epg/ar.xml.gz` |
+| `KzStore` / Room **v4** | programas parseados en `epg_programs` + `epg_cache_meta` (clave única `active`) y la URL en `app_settings.epgUrl` |
+| `TvController` | carga en `Dispatchers.IO`, cache de disco → cache de Room → parseo; **fallback** a la guía actual y después a la embebida |
+| API | `POST /api/epg` `{url, token}` y comando WS `epg` (con `text` = URL, sin `text` = recargar) |
+| Companion | campo "URL de la guia EPG" en *Configurar* y botón "Guia EPG" en *Control* |
+| Ajustes | 5ª fila **"Guia EPG"** (muestra el origen; con OK recarga) |
+
+**Medido en la TCL Smart TV Pro**:
+
+| Escenario | Log / resultado |
+|---|---|
+| Arranque en frío (app nueva) | `EPG listo en 9.957 ms (parse)` → 2.474 programas |
+| Arranque con cache de Room | `EPG listo en 5.518 ms (cache)` |
+| Arranque con URL configurada | `EPG remoto listo en 831 ms (cache disco + cache Room)` |
+| Descarga + parseo (guía de 2.475 programas servida desde la PC) | `EPG remoto listo en 5.510 ms (descarga + parseo)` y el canal "24/7 Canal de Noticias" mostró el título del archivo remoto |
+| URL rota (404) | `W No se pudo actualizar la guia EPG remota: HTTP 404` → **la guía sigue en pantalla** |
+| Tests | **82 unitarios verdes** (`testDebugUnitTest`, +6 nuevos) + **5 instrumentados** verdes en la TV (la migración 1→4 verifica que `epgUrl` viene vacío) |
+
+El detalle del diseño está en [docs/PLAN.md](PLAN.md) §16 y el cierre de la sesión en
+[docs/HANDOVER.md](HANDOVER.md) §13.

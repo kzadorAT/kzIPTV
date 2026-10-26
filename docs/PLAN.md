@@ -246,7 +246,7 @@ kzIPTV/
 | Fase | Duración | Entregable | Criterio de salida |
 |---|---|---|---|
 | **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | ✅ **cerrado** (probado en la TCL real) |
-| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: refresh con diff, EPG fresco y selector de lista |
+| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: refresh con diff y selector de lista (el EPG fresco ya está, §16) |
 | **P2 · Guía y comparación** | 2-3 sem | grilla completa de EPG, celu como control remoto completo, health check | 🟡 **parcial**: el mosaico de miniaturas **con surf** ya está (P1) y el companion ya es control remoto. Falta la grilla de EPG. El PiP se descartó: no existe en Android TV |
 | **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | ⬜ pendiente |
 
@@ -399,7 +399,7 @@ sentido con una playlist multi-audio: de 24 streams medidos, 0 pistas de audio y
 4. Lo que ya estaba en el plan se ignora al reportarlo: se confirma y sigue.
 ---
 
-## 16 · EPG fresco (P1) — **en curso desde el 26/10/2026**
+## 16 · EPG fresco (P1) — **hecho el 26/10/2026**
 
 Este es el pendiente que se retoma después del handover del 26/10/2026 (§9, ítem 4). El otro
 pendiente de P1 ("refresh de playlist con diff") queda para el siguiente chat.
@@ -426,6 +426,14 @@ que muestra el origen y la última carga; con OK se fuerza la descarga.
    ninguna, con el asset embebido. Un error de red no puede dejar la TV sin guía.
 6. **Una sola fuente activa**: `epg_cache_meta` describe siempre lo que hay en la tabla (clave
    única `active`), así que nunca se puede devolver una guía vieja como si fuera la nueva.
+
+**Implementado y verificado en la TV real** (`2c44150`): el alta del endpoint
+`POST /api/epg`, el campo en el companion, la fila "Guia EPG" de Ajustes, el cache en disco con
+TTL de 24 h, el cache en Room con fingerprint SHA-256 y el fallback a la guía embebida.
+Medido en la TCL Smart TV Pro: arranque en frío `EPG listo en 9.957 ms (parse)`, arranque con
+cache `5.518 ms (cache)`, descarga + parseo `5.510 ms` y arranque con todo cacheado
+`831 ms (cache disco + cache Room)`. Con una URL rota la app avisa `HTTP 404` y **mantiene la
+guía que ya tenía**. Detalle exacto en `docs/HANDOVER.md` §13.
 
 **Pendiente**: la URL por defecto (el repo todavía no está publicado: `git remote -v` no trae
 ningún remoto) y el resto de la fila de Ajustes (persistencia del server, selector de lista).

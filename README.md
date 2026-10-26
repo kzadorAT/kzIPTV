@@ -46,6 +46,9 @@ kzIPTV/
   de verdad; la primera pulsación muestra el aviso "Presiona BACK otra vez para salir".
 - **Setup por QR**: la TV levanta un server embebido, el celular entra por QR con código de 6
   dígitos y queda emparejado con un token.
+- **Guía EPG fresca**: desde el celular le pasás la URL del XMLTV (puede ir `.gz`) y la TV la baja,
+  la cachea en disco (24 h) y en Room, y actualiza la guía en caliente sin reinstalar la app.
+  Si la red falla, sigue con la guía que ya tenía (o con la embebida).
 
 ### Navegación determinista
 
