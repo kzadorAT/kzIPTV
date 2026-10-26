@@ -259,6 +259,7 @@ fun GridScreen(controller: TvController) {
     val gridState = rememberLazyGridState()
     val chipState = rememberLazyListState()
     val focusedCategory by controller.focusedCategory.collectAsState()
+    val exitHint by controller.exitHintVisible.collectAsState()
 
     // Columnas EXACTAS de la grilla: el D-pad del controller necesita saber
     // cuantas hay por fila para mover el foco de fila en fila.
@@ -297,83 +298,103 @@ fun GridScreen(controller: TvController) {
         if (index >= 0) chipState.scrollToItem(index)
     }
 
-    Column(Modifier.fillMaxSize().background(KzBg).padding(24.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = "kzIPTV", color = KzBlue, fontSize = 30.sp)
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().background(KzBg).padding(24.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(text = "kzIPTV", color = KzBlue, fontSize = 30.sp)
+                Text(
+                    text = "   ${list.size} canales" +
+                        (if (catalog.variantCount > catalog.groups.size) " / ${catalog.variantCount} feeds" else "") +
+                        (if (controller.zapFavoritesOnly.value) " / zap: FAVORITOS" else ""),
+                    color = Color(0xFF7C8899),
+                    fontSize = 16.sp
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            LazyRow(state = chipState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                item {
+                    CategoryChip(
+                        label = "Todos",
+                        selected = selectedCategory == null,
+                        focused = focusedCategory == "",
+                        onClick = {
+                            controller.setCategory(null)
+                            controller.focusGrid()
+                        }
+                    )
+                }
+                items(catalog.categories.size) { index ->
+                    val category = catalog.categories[index]
+                    CategoryChip(
+                        label = category,
+                        selected = selectedCategory == category,
+                        focused = focusedCategory == category,
+                        onClick = {
+                            controller.setCategory(category)
+                            controller.focusGrid()
+                        }
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(columns),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(list.size, key = { index -> list[index].id }) { index ->
+                    val group = list[index]
+                    val measured = if (current?.id == group.id && videoWidth > 0) {
+                        "${videoHeight}p"
+                    } else {
+                        group.variants.firstOrNull { it.channelId == group.activeVariantId }
+                            ?.measured?.takeIf { it.isNotBlank() }?.let { it.substringAfter('x') + "p" } ?: ""
+                    }
+                    ChannelCard(
+                        group = group,
+                        favorite = favorites.contains(group.id) ||
+                            group.variants.any { favorites.contains(it.channelId) },
+                        active = current?.id == group.id,
+                        focused = focusedId == group.id && focusedCategory == null,
+                        measuredQuality = measured,
+                        onClick = {
+                            controller.setFocused(group.id)
+                            controller.play(group)
+                        }
+                    )
+                }
+            }
+
             Text(
-                text = "   ${list.size} canales" +
-                    (if (catalog.variantCount > catalog.groups.size) " / ${catalog.variantCount} feeds" else "") +
-                    (if (controller.zapFavoritesOnly.value) " / zap: FAVORITOS" else ""),
-                color = Color(0xFF7C8899),
-                fontSize = 16.sp
+                text = "OK reproducir \u00b7 OK largo calidad \u00b7 AMARILLO favorito \u00b7 ROJO zap favoritos \u00b7 MENU QR",
+                color = Color(0xFF56616F),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(top = 10.dp)
             )
         }
 
-        Spacer(Modifier.height(12.dp))
-
-        LazyRow(state = chipState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            item {
-                CategoryChip(
-                    label = "Todos",
-                    selected = selectedCategory == null,
-                    focused = focusedCategory == "",
-                    onClick = {
-                        controller.setCategory(null)
-                        controller.focusGrid()
-                    }
-                )
-            }
-            items(catalog.categories.size) { index ->
-                val category = catalog.categories[index]
-                CategoryChip(
-                    label = category,
-                    selected = selectedCategory == category,
-                    focused = focusedCategory == category,
-                    onClick = {
-                        controller.setCategory(category)
-                        controller.focusGrid()
-                    }
+        // Aviso de "BACK otra vez para salir": la app se cierra de verdad.
+        if (exitHint) {
+            Box(
+                Modifier.fillMaxSize().padding(bottom = 60.dp),
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Text(
+                    text = "Presiona BACK otra vez para salir",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Color(0xE6222733))
+                        .padding(horizontal = 20.dp, vertical = 12.dp)
                 )
             }
         }
-
-        Spacer(Modifier.height(16.dp))
-
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(columns),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            items(list.size, key = { index -> list[index].id }) { index ->
-                val group = list[index]
-                val measured = if (current?.id == group.id && videoWidth > 0) {
-                    "${videoHeight}p"
-                } else {
-                    group.variants.firstOrNull { it.channelId == group.activeVariantId }
-                        ?.measured?.takeIf { it.isNotBlank() }?.let { it.substringAfter('x') + "p" } ?: ""
-                }
-                ChannelCard(
-                    group = group,
-                    favorite = favorites.contains(group.id) ||
-                        group.variants.any { favorites.contains(it.channelId) },
-                    active = current?.id == group.id,
-                    focused = focusedId == group.id && focusedCategory == null,
-                    measuredQuality = measured,
-                    onClick = {
-                        controller.setFocused(group.id)
-                        controller.play(group)
-                    }
-                )
-            }
-        }
-
-        Text(
-            text = "OK reproducir \u00b7 OK largo calidad \u00b7 AMARILLO favorito \u00b7 ROJO zap favoritos \u00b7 MENU QR",
-            color = Color(0xFF56616F),
-            fontSize = 13.sp,
-            modifier = Modifier.padding(top = 10.dp)
-        )
     }
 }
 

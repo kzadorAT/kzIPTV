@@ -4,6 +4,7 @@ Reproductor IPTV para **Android TV**: listas m3u (iptv-org y propias) con **setu
 
 - 📖 Diseño y plan completo: [docs/PLAN.md](docs/PLAN.md)
 - 🧪 Estado y aprendizajes: [docs/P0-STATUS.md](docs/P0-STATUS.md)
+- 🧭 Traspaso para retomar en otro chat: [docs/HANDOVER.md](docs/HANDOVER.md)
 - Playlist de referencia: <https://iptv-org.github.io/iptv/countries/ar.m3u>
 
 ## Estructura
@@ -41,6 +42,8 @@ kzIPTV/
   15 s y la página entera se renueva cada ~2 min. El tile en captura lleva un punto rojo
   **ON AIR**.
 - **Salvapantallas**: la pantalla no se apaga durante la reproducción (`FLAG_KEEP_SCREEN_ON`).
+- **Salir de la app**: en la pantalla de canales, **BACK dos veces** (dentro de 3 s) cierra la app
+  de verdad; la primera pulsación muestra el aviso "Presiona BACK otra vez para salir".
 - **Setup por QR**: la TV levanta un server embebido, el celular entra por QR con código de 6
   dígitos y queda emparejado con un token.
 

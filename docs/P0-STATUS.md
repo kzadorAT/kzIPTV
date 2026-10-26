@@ -533,3 +533,50 @@ BACK     -> vuelve a la grilla y el surf se corta
 
 Sin ANR y sin "dead thread" en el log: el surf no rompe el decoder único.
 
+---
+
+## 11 · Salir de la app: BACK doble en la pantalla de canales
+
+### Qué se implementó
+
+`BACK` siempre fue "un paso atrás". Ahora, cuando ya no queda adónde ir (la **grilla** es la
+pantalla raíz), el primer BACK **muestra el aviso** y un segundo BACK dentro de 3 s **cierra la
+app de verdad** (vuelve al launcher y saca la tarea de recientes).
+
+| Pieza | Qué hace |
+|---|---|
+| `MainActivity.lastBackAt` + `EXIT_WINDOW_MS = 3_000L` | Ventana de tiempo entre los dos BACK |
+| `TvController.back(): Boolean` | Devuelve `false` **sólo en la raíz** (`Screen.GRID`) |
+| `TvController.exitHintVisible` + `showExitHint()` / `hideExitHint()` | El aviso, que se oculta solo a los 3 s |
+| `MainActivity.closeApp()` | Log `salida por BACK doble`, para el server, libera players y `finishAndRemoveTask()` |
+| `GridScreen` (Compose) | La pastilla "Presiona BACK otra vez para salir" abajo al centro |
+
+De paso se corrigió un bug de navegación: `playerBackScreen` pasó de `Screen.PLAYER` a
+`Screen.GRID`, así que **BACK desde el video vuelve a la grilla** (antes se quedaba en el
+player). Y el BACK que llega desde el celular (`{"type":"key","code":4}`) ahora **se reinyecta
+como tecla real**, para que el celular pueda hacer el mismo BACK doble.
+
+### El flujo real (Ojo con esto)
+
+```
+PLAYER (la app arranca aqui: retoma el ultimo canal)
+   BACK  -> GRILLA
+   BACK  -> aviso: Presiona BACK otra vez para salir
+   BACK  -> la app se cierra (vuelve al launcher)
+```
+
+### Verificado / pendiente
+
+- ✅ El aviso aparece en la grilla (captura de pantalla en la TV).
+- ⏳ Falta confirmar en la TV el **cierre real** (que el proceso muera y que no queden tareas en
+  recientes) y que no haya crash en el logcat.
+
+---
+
+## 12 · Trampa de trabajo: las capturas por ADB cortan la conexión
+
+`adb exec-out screencap` (o un `adb pull` grande) por ADB sobre WiFi deja la conexión colgada y
+la sesión se frena; la TV puede quedar sin responder a `adb connect` aunque la app esté
+perfecta. Para capturas: `adb shell screencap -p /sdcard/s.png` → `adb pull` → leer el archivo,
+y para verificar estado usar `/api/state` (JSON) en vez de una imagen. El detalle está en
+[docs/HANDOVER.md](HANDOVER.md) §7.

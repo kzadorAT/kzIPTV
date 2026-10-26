@@ -20,7 +20,16 @@ class MainActivity : ComponentActivity() {
     private var server: EmbeddedServer? = null
     private var okDownAt = 0L
 
+    /** Momento del ultimo BACK en la pantalla raiz (para el BACK doble). */
+    private var lastBackAt = 0L
+
+    /** La app ya se esta cerrando: no se sueltan los recursos dos veces. */
+    private var closing = false
+
     companion object {
+        /** Ventana para el segundo BACK que cierra la app. */
+        private const val EXIT_WINDOW_MS = 3_000L
+
         @Volatile
         private var current: MainActivity? = null
 
@@ -150,8 +159,16 @@ class MainActivity : ComponentActivity() {
                         // Cierra el IME del sistema y deja el foco en la pantalla.
                         controller.setSearchFieldFocused(false)
                         controller.clearSearchFieldFocus()
-                    } else {
-                        controller.back()
+                    } else if (!controller.back()) {
+                        // Estamos en la pantalla raiz (la grilla): no hay a donde
+                        // volver. Un BACK mas dentro de la ventana cierra la app.
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (now - lastBackAt <= EXIT_WINDOW_MS) {
+                            closeApp()
+                        } else {
+                            lastBackAt = now
+                            controller.showExitHint()
+                        }
                     }
                 }
                 return true
@@ -160,11 +177,29 @@ class MainActivity : ComponentActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    override fun onDestroy() {
-        current = null
+    /**
+     * Cierra la app de verdad: se sueltan el server embebido, el player de
+     * reproduccion y el de captura, y se borra la tarea de la lista de apps
+     * recientes (vuelve al launcher, como en cualquier Android TV).
+     */
+    private fun closeApp() {
+        if (closing) return
+        closing = true
+        android.util.Log.i("KzIPTV", "salida por BACK doble")
+        controller.hideExitHint()
         server?.stop()
         controller.release()
         controller.player.release()
+        finishAndRemoveTask()
+    }
+
+    override fun onDestroy() {
+        current = null
+        if (!closing) {
+            server?.stop()
+            controller.release()
+            controller.player.release()
+        }
         super.onDestroy()
     }
 }

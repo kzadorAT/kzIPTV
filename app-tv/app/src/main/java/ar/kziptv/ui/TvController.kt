@@ -203,7 +203,13 @@ class TvController(
     private var mosaicCaptureJob: Job? = null
 
     /** A donde vuelve BACK cuando el canal se eligio desde una lista. */
-    private var playerBackScreen: Screen = Screen.PLAYER
+    private var playerBackScreen: Screen = Screen.GRID
+
+    /** Aviso de "presiona BACK otra vez para salir". */
+    val exitHintVisible = MutableStateFlow(false)
+
+    /** Job que oculta solo el aviso de salida. */
+    private var exitHintJob: Job? = null
 
     val playbackState = MutableStateFlow("idle")
     val playbackError = MutableStateFlow("")
@@ -392,6 +398,8 @@ class TvController(
         const val SURF_FOCUS_MS = SurfPlanner.FOCUS_MS
         /** Cada cuanto se refresca la pagina completa (rolling). */
         const val SURF_PAGE_MS = SurfPlanner.PAGE_MS
+        /** Cuanto dura el aviso "presiona BACK otra vez para salir". */
+        const val EXIT_HINT_MS = 3_000L
         /** Resolution del loop de surf (reactividad ante cambios de foco). */
         const val SURF_TICK_MS = 250L
         /** Columnas del mosaico. */
@@ -602,16 +610,41 @@ class TvController(
         screen.value = Screen.GRID
     }
 
-    fun back() {
+    /**
+     * BACK: un paso para atras.
+     *
+     * @return false si ya estamos en la pantalla raiz (la grilla): ahi no hay
+     *         a donde volver y el BACK doble cierra la app.
+     */
+    fun back(): Boolean {
         focusedCategory.value = null
-        when (screen.value) {
-            Screen.SEARCH -> screen.value = Screen.GRID
-            Screen.MOSAIC -> closeMosaic()
+        return when (screen.value) {
+            Screen.SEARCH -> { screen.value = Screen.GRID; true }
+            Screen.MOSAIC -> { closeMosaic(); true }
+            Screen.QUALITY -> { screen.value = Screen.PLAYER; true }
+            Screen.SETUP -> { screen.value = Screen.GRID; true }
             // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
             // BACK devuelve a esa lista. Si se estaba zapeando, vuelve al video.
-            Screen.PLAYER -> screen.value = playerBackScreen
-            else -> screen.value = Screen.PLAYER
+            Screen.PLAYER -> { screen.value = playerBackScreen; true }
+            Screen.GRID -> false
+            else -> { screen.value = Screen.GRID; true }
         }
+    }
+
+    /** Muestra el aviso "presiona BACK otra vez para salir". */
+    fun showExitHint() {
+        exitHintJob?.cancel()
+        exitHintVisible.value = true
+        exitHintJob = scope.launch {
+            delay(EXIT_HINT_MS)
+            exitHintVisible.value = false
+        }
+    }
+
+    /** Oculta el aviso de salida (o se agota solo). */
+    fun hideExitHint() {
+        exitHintJob?.cancel()
+        exitHintVisible.value = false
     }
 
     /**
@@ -884,6 +917,7 @@ class TvController(
     fun release() {
         mosaicSweepJob?.cancel()
         mosaicCaptureJob?.cancel()
+        exitHintJob?.cancel()
         mosaic.release()
     }
 

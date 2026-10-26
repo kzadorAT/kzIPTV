@@ -211,7 +211,9 @@ class EmbeddedServer(
                         185 -> controller.toggleFavorite()
                         183 -> controller.toggleZapMode()
                         23, 66 -> controller.onOk(false)
-                        4 -> controller.back()
+                        // BACK se reinyecta como tecla real: asi el celular puede
+                        // hacer el mismo BACK doble que cierra la app.
+                        4 -> ar.kziptv.MainActivity.injectKey(command.code)
                         82, 186 -> controller.openPairing()
                         // Flechas: se reinyectan como tecla real para que Compose mueva el foco.
                         19, 20, 21, 22 -> ar.kziptv.MainActivity.injectKey(command.code)
