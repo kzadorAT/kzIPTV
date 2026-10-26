@@ -1,10 +1,15 @@
 # HANDOVER - kzIPTV (para retomar en un chat nuevo)
 
-> Fecha de corte: **26/10/2026** (Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
+> Fecha de corte: **26/10/2026** (tarde, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
+> - Working tree **limpio** y todo comiteado (ultimo commit funcional: `f17ae64`).
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
 > los limites fisicos de la TV y la lista de lo que falta.
+>
+> **Resumen de la sesion que se cerro (26/10/2026 tarde):** se implemento y verifico en la TV real
+> el scroll de la grilla, el cartel de estado transitorio y la pantalla **AJUSTES** con el server web
+> apagable. Detalle exacto en la seccion 12.
 
 ---
 
@@ -53,6 +58,12 @@ IP `192.168.1.18:5555` (ADB por WiFi; cambio desde `192.168.1.20` el 26/10/2026)
 - **76 tests unitarios** verdes (`testDebugUnitTest`) + **5 tests instrumentados** en la TV real
   (import del JSON legado, migracion Room v1→v3, cache EPG, historial y escrituras concurrentes).
 - **Persistencia en Room** (esquema v3) con multi-lista, historial y cache EPG (ver seccion 2.1).
+- **Scroll de la grilla** que acompana al foco (antes la pantalla se quedaba estatica al seguir bajando).
+- **Cartel de estado transitorio**: los mensajes informativos se van solos a los 3,5 s; los errores quedan fijos.
+- **Pantalla AJUSTES** (tecla **AZUL**) con 4 filas: Servidor web / Emparejar el celular (QR) / Zap / Video.
+- **Server web apagable**: al arrancar la app el server esta **apagado**; se prende desde Ajustes
+  (o con OK en la pantalla de emparejamiento) y se apaga al salir de la app.
+- **Encuadre del video**: Ajustar / Rellenar / Ampliar (desde Ajustes; es runtime, no se persiste).
 
 ### 2.1 Persistencia en Room (P1, verificado en la TV real)
 
@@ -235,7 +246,7 @@ $env:ANDROID_HOME='C:\Users\fabri\AppData\Local\Android\Sdk'
 - Gradle 8.11.1 en `.tools/gradle-8.11.1` (no hay wrapper funcional: usar el `.bat` de arriba).
 - AGP 8.7.3 - Kotlin 2.0.21 - compile/target SDK 35 - minSdk 23 - JVM 17.
 - APK: `app-tv/app/build/outputs/apk/debug/app-debug.apk`.
-- Tests: `app-tv/app/build/test-results/testDebugUnitTest/` (9 clases, 71 tests).
+- Tests: `app-tv/app/build/test-results/testDebugUnitTest/` (76 tests verdes al 26/10/2026).
 
 ### Companion web
 
@@ -348,6 +359,12 @@ Lo que queda **pendiente** de esta lista: la guía lineal de EPG (P2) y el selec
 (solo tiene sentido con una playlist multi-audio: 0 pistas medidas en 24 streams). El encuadre del
 video (Ajustar/Rellenar/Ampliar) y el estado del server son **runtime**: se pierden al salir de la app.
 
+Pendientes que surgieron al hacer la pantalla de Ajustes (ninguno bloquea al MVP):
+
+- **Persistir la preferencia del server** ("dejarlo siempre encendido") -> hoy el estado es solo runtime.
+- **Mas filas en Ajustes**: selector de lista, parental/PIN, aspecto.
+- **Selector de lista en la TV**: la tabla `playlists` de Room ya soporta multi-lista; falta la UI.
+
 ### P2
 
 9. **Grilla completa de EPG** (filas = canales, timeline, linea de ahora).
@@ -377,6 +394,7 @@ video (Ajustar/Rellenar/Ampliar) y el estado del server son **runtime**: se pier
 ## 11 - Historial de commits (para ubicarse)
 
 ```
+140db94 docs(p1): marcar lo implementado en plan, handover y estado
 f17ae64 feat(p1): pantalla de ajustes con server web apagable
 5de8a5f fix(p1): la grilla acompana al foco y el cartel de estado se va solo
 59962ff docs(p1): triar las observaciones de UX y anotarlas en el backlog
@@ -398,3 +416,45 @@ Al corte, **todo comiteado y verificado en la TV**: la salida por BACK doble, el
 celular reinyectado como tecla real, la terminacion real del proceso, la migracion de la
 persistencia a Room (esquema v3, con cache EPG e historial), el scroll de la grilla, el cartel
 de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encuadre del video).
+
+---
+
+## 12 - Cierre de la sesion (26/10/2026 tarde): que quedo verificado y por donde seguir
+
+### Implementado y verificado en la TV real (TCL Smart TV Pro, `192.168.1.18`)
+
+1. **Scroll de la grilla** (`5de8a5f`): el `LazyVerticalGrid` ahora recibe `state = gridState` y
+   desplaza **lo justo** (calcula el paso de fila con los items visibles). Antes la pantalla se
+   quedaba estatica al seguir bajando con el D-pad.
+2. **Cartel de estado transitorio** (`5de8a5f`): `setStatus(text, sticky)` con auto-ocultamiento a
+   los **3,5 s** y recuadro redondeado; los errores quedan fijos. Verificado con capturas: al
+   arrancar se ve el cartel "Cargando..." y a los ~5 s ya no esta (lo que sigue en pantalla es el
+   texto "Cargando canal..." del reproductor, que es otro elemento, no el cartel).
+3. **Pantalla AJUSTES** (`f17ae64`): tecla **AZUL** -> 4 filas (Servidor web / Emparejar el celular /
+   Zap / Video).
+   - El server web **arranca apagado**; con OK en "Servidor web" se prende y muestra
+     `http://192.168.1.18:8080`; con OK otra vez lo apaga.
+   - "Emparejar el celular" abre el setup con el **QR**; si el server esta apagado avisa
+     "Servidor web apagado / Presiona OK para encenderlo" y lo prende con OK.
+   - **BACK** desde el setup vuelve a **Ajustes** (campo `setupBackScreen`), no a la grilla.
+   - "Video" cicla **Ajustar -> Rellenar -> Ampliar**; "Zap" conmuta solo-favoritos.
+   - BACK desde Ajustes vuelve al reproductor (con el foco donde estaba).
+4. **Tests**: 76 unitarios verdes (`testDebugUnitTest`) + 5 instrumentados en la TV
+   (`am instrument -w ar.kziptv.debug.test/androidx.test.runner.AndroidJUnitRunner` -> `OK (5 tests)`).
+   Ojo: `am instrument` **force-stop** la app al terminar; relanzarla con `am start -n`.
+
+### Estado al dejar esta sesion
+
+- Working tree **limpio**, todo comiteado (`59962ff`, `5de8a5f`, `f17ae64`, `140db94`).
+- La app queda **instalada y funcionando** en la TV; el server web queda **apagado**
+  (confirmado: conexion a `192.168.1.18:8080` rechazada).
+- No quedan capturas temporales (`.tools/ux-*.png` borradas).
+
+### Por donde seguir (proximo chat)
+
+1. Elegir **un** pendiente del P1 de la seccion 9 (los de mas valor: **refresh de playlist con diff**
+   o **EPG fresco descargado del repo**) y anotarlo en `docs/PLAN.md` antes de tocar codigo.
+2. La **guia lineal de EPG** es P2: usarla como ejercicio de diseno del ticker, no mezclarla con el P1.
+3. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
+4. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
+   `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
