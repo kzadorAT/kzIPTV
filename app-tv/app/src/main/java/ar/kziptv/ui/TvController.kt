@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import ar.kziptv.core.catalog.ChannelCatalog
 import ar.kziptv.core.catalog.ChannelGrouper
+import ar.kziptv.core.epg.EpgCache
 import ar.kziptv.core.epg.EpgIndex
 import ar.kziptv.core.epg.EpgParser
 import ar.kziptv.core.model.Channel
@@ -12,6 +13,7 @@ import ar.kziptv.core.model.ChannelVariant
 import ar.kziptv.core.model.toChannel
 import ar.kziptv.core.parse.M3uParser
 import ar.kziptv.data.KzStore
+import ar.kziptv.data.PlaylistMerge
 import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.core.nav.GridNavigator
@@ -110,7 +112,7 @@ class TvController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     val catalog = MutableStateFlow(ChannelCatalog(emptyList()))
-    val favorites = MutableStateFlow(store.state.value.favorites.toSet())
+    val favorites = MutableStateFlow<Set<String>>(emptySet())
     val currentGroup = MutableStateFlow<ChannelGroup?>(null)
     val currentVariant = MutableStateFlow<ChannelVariant?>(null)
     val bannerVisible = MutableStateFlow(false)
@@ -126,8 +128,8 @@ class TvController(
     val epg = MutableStateFlow(EpgIndex(emptyList()))
     val status = MutableStateFlow("Cargando…")
     val serverUrl = MutableStateFlow("")
-    val pairingCode = MutableStateFlow(store.state.value.pairingCode.ifBlank { generateCode() })
-    val zapFavoritesOnly = MutableStateFlow(store.state.value.zapFavoritesOnly)
+    val pairingCode = MutableStateFlow("")
+    val zapFavoritesOnly = MutableStateFlow(false)
     val focusedGroupId = MutableStateFlow<String?>(null)
     val focusedVariantId = MutableStateFlow<String?>(null)
 
@@ -271,7 +273,9 @@ class TvController(
             if (id != null && w > 0) {
                 val value = w.toString() + "x" + h
                 if (store.state.value.measuredResolution[id] != value) {
-                    store.update { it.copy(measuredResolution = it.measuredResolution + (id to value)) }
+                    scope.launch {
+                        store.update { it.copy(measuredResolution = it.measuredResolution + (id to value)) }
+                    }
                 }
             }
         }
@@ -412,14 +416,22 @@ class TvController(
 
     fun bootstrap() {
         scope.launch {
-            val persisted = store.state.value.sources
-            val sources = persisted.ifEmpty {
+            val persistedState = store.initialize()
+            favorites.value = persistedState.favorites.toSet()
+            val resolvedPairingCode = persistedState.pairingCode.ifBlank { generateCode() }
+            pairingCode.value = resolvedPairingCode
+            zapFavoritesOnly.value = persistedState.zapFavoritesOnly
+            val sources = persistedState.sources.ifEmpty {
                 listOf(PersistedSource(id = BUNDLED_ID, name = "iptv-org \u00b7 Argentina", url = BUNDLED_URL, bundled = true))
             }
             val all = mutableListOf<Channel>()
             sources.forEach { source ->
                 val content = try {
-                    if (source.bundled) repo.bundledAr() else repo.fetch(source.url)
+                    when {
+                        source.bundled -> repo.bundledAr()
+                        source.content.isNotBlank() -> source.content
+                        else -> repo.fetch(source.url)
+                    }
                 } catch (e: Exception) {
                     status.value = "No pude leer ${source.name}: ${e.message}"
                     null
@@ -427,7 +439,12 @@ class TvController(
                 all += withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
             }
             applyChannels(all)
-            store.update { it.copy(sources = sources, pairingCode = pairingCode.value) }
+            store.update { current ->
+                current.copy(
+                    sources = PlaylistMerge.merge(current.sources, sources),
+                    pairingCode = resolvedPairingCode,
+                )
+            }
             android.util.Log.i(
                 "KzStartup",
                 "playlist lista en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
@@ -439,7 +456,7 @@ class TvController(
             } else {
                 // Retoma el ultimo canal que se estaba viendo; si no, el primero disponible.
                 val list = catalog.value.groups
-                val lastGroupId = store.state.value.lastGroupId
+                val lastGroupId = persistedState.lastGroupId
                 val target = list.firstOrNull { it.id == lastGroupId && it.variants.any { v -> v.playable } }
                     ?: list.firstOrNull { it.variants.any { v -> v.playable } }
                 if (target != null) play(target, showBanner = false)
@@ -462,15 +479,29 @@ class TvController(
     private fun loadBundledEpg() {
         scope.launch {
             // Todo el parseo del XMLTV (~2 MB) va en IO: en el hilo principal provocaba ANR.
+            var fromCache = false
             val programs = withContext(Dispatchers.IO) {
                 val text = readBundledEpgText() ?: return@withContext emptyList()
-                EpgParser.parse(text)
+                val fingerprint = EpgCache.fingerprint(text)
+                val cached = store.cachedEpgPrograms(fingerprint)
+                if (cached != null) {
+                    fromCache = true
+                    cached
+                } else {
+                    EpgParser.parse(text).also { parsed ->
+                        store.cacheEpgPrograms(fingerprint, parsed)
+                    }
+                }
             }
             if (programs.isNotEmpty()) {
                 epg.value = EpgIndex(programs)
                 status.value = "${catalog.value.groups.size} canales \u00b7 ${programs.size} programas EPG"
             }
-            android.util.Log.i("KzStartup", "EPG listo en " + (android.os.SystemClock.elapsedRealtime() - bootAt) + " ms")
+            android.util.Log.i(
+                "KzStartup",
+                "EPG listo en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
+                    " ms (" + (if (fromCache) "cache" else "parse") + ")",
+            )
         }
     }
 
@@ -530,7 +561,10 @@ class TvController(
         if (switchToPlayer) screen.value = Screen.PLAYER
         playbackState.value = "buffering"
         playbackError.value = ""
-        store.update { it.copy(lastGroupId = group.id, lastChannelId = chosen.channelId) }
+        scope.launch {
+            store.update { it.copy(lastGroupId = group.id, lastChannelId = chosen.channelId) }
+            store.recordWatch(group.id, group.id, chosen.channelId)
+        }
         if (showBanner) showBanner()
     }
 
@@ -591,13 +625,17 @@ class TvController(
             updated.add(group.id)
         }
         favorites.value = updated
-        store.update { it.copy(favorites = updated.toList()) }
+        scope.launch {
+            store.update { it.copy(favorites = updated.toList()) }
+        }
         status.value = if (!wasFavorite) "\u2605 ${group.name} agregado a favoritos" else "${group.name} quitado de favoritos"
     }
 
     fun toggleZapMode() {
         zapFavoritesOnly.value = !zapFavoritesOnly.value
-        store.update { it.copy(zapFavoritesOnly = zapFavoritesOnly.value) }
+        scope.launch {
+            store.update { it.copy(zapFavoritesOnly = zapFavoritesOnly.value) }
+        }
         status.value = if (zapFavoritesOnly.value) "Zap: solo FAVORITOS" else "Zap: todos los canales"
     }
 
@@ -948,7 +986,9 @@ class TvController(
     fun playVariant(groupId: String, variantId: String) {
         val group = catalog.value.resolve(groupId) ?: return
         val variant = group.variants.firstOrNull { it.channelId == variantId } ?: return
-        store.update { it.copy(qualityPreference = it.qualityPreference + (group.id to variantId)) }
+        scope.launch {
+            store.update { it.copy(qualityPreference = it.qualityPreference + (group.id to variantId)) }
+        }
         markVariant(variantId, ChannelVariant.STATUS_UNKNOWN)
         screen.value = Screen.PLAYER
         play(group, variant)
@@ -958,7 +998,9 @@ class TvController(
     fun selectVariant(variantId: String) {
         val target = qualityTarget.value ?: currentGroup.value ?: return
         val variant = target.variants.firstOrNull { it.channelId == variantId } ?: return
-        store.update { it.copy(qualityPreference = it.qualityPreference + (target.id to variantId)) }
+        scope.launch {
+            store.update { it.copy(qualityPreference = it.qualityPreference + (target.id to variantId)) }
+        }
         markVariant(variantId, ChannelVariant.STATUS_UNKNOWN)
         screen.value = Screen.PLAYER
         play(target, variant)
@@ -1261,10 +1303,11 @@ class TvController(
 
     suspend fun addSourceByUrl(url: String): Int = withContext(Dispatchers.IO) {
         val content = repo.fetch(url)
-        val channels = M3uParser.parse(content, "url-${System.currentTimeMillis()}")
+        val sourceId = "url-${System.currentTimeMillis()}"
+        val channels = M3uParser.parse(content, sourceId)
         if (channels.isEmpty()) error("La lista no tiene canales")
         val source = PersistedSource(
-            id = "url-${System.currentTimeMillis()}",
+            id = sourceId,
             name = url.substringAfterLast('/').ifBlank { "Playlist" },
             url = url,
             channelCount = channels.size
@@ -1275,13 +1318,15 @@ class TvController(
     }
 
     suspend fun addSourceByContent(name: String, content: String): Int = withContext(Dispatchers.IO) {
-        val channels = M3uParser.parse(content, "file-${System.currentTimeMillis()}")
+        val sourceId = "file-${System.currentTimeMillis()}"
+        val channels = M3uParser.parse(content, sourceId)
         if (channels.isEmpty()) error("El archivo no tiene canales")
         val source = PersistedSource(
-            id = "file-${System.currentTimeMillis()}",
+            id = sourceId,
             name = name.ifBlank { "Playlist" },
             bundled = false,
-            channelCount = channels.size
+            channelCount = channels.size,
+            content = content,
         )
         store.update { it.copy(sources = it.sources + source) }
         applyChannels(catalog.value.all + channels)
@@ -1371,7 +1416,9 @@ class TvController(
             status
         }
         if (store.state.value.variantStatus[variantId] == value) return
-        store.update { it.copy(variantStatus = it.variantStatus + (variantId to value)) }
+        scope.launch {
+            store.update { it.copy(variantStatus = it.variantStatus + (variantId to value)) }
+        }
     }
 
     private fun showBanner() {

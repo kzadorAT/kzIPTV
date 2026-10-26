@@ -13,10 +13,13 @@ import ar.kziptv.ui.KzTheme
 import ar.kziptv.ui.Screen
 import ar.kziptv.ui.TvController
 import ar.kziptv.ui.TvRoot
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var controller: TvController
+    private lateinit var store: KzStore
     private var server: EmbeddedServer? = null
     private var okDownAt = 0L
 
@@ -53,7 +56,7 @@ class MainActivity : ComponentActivity() {
         current = this
         val t0 = android.os.SystemClock.elapsedRealtime()
 
-        val store = KzStore(this)
+        store = KzStore(this)
         val repository = SourceRepository(this)
         val player = PlayerManager(this)
 
@@ -65,7 +68,11 @@ class MainActivity : ComponentActivity() {
         // tira ANR por el timeout de input. Se levanta en un hilo propio.
         val srv = EmbeddedServer(this, controller, store)
         server = srv
-        Thread({ srv.start() }, "kziptv-server").apply { isDaemon = true }.start()
+        Thread({
+            // El server no acepta requests hasta que Room termino de migrar/cargar el estado.
+            runBlocking { store.initialize() }
+            srv.start()
+        }, "kziptv-server").apply { isDaemon = true }.start()
 
         setContent {
             KzTheme {
@@ -190,6 +197,7 @@ class MainActivity : ComponentActivity() {
         server?.stop()
         controller.release()
         controller.player.release()
+        runBlocking(Dispatchers.IO) { store.close() }
         finishAndRemoveTask()
 
         // finishAndRemoveTask() saca la activity y la tarea del launcher, pero Android
@@ -205,6 +213,7 @@ class MainActivity : ComponentActivity() {
             server?.stop()
             controller.release()
             controller.player.release()
+            runBlocking(Dispatchers.IO) { store.close() }
         }
         super.onDestroy()
     }
