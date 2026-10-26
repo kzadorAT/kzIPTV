@@ -1,6 +1,9 @@
 package ar.kziptv.ui
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -16,6 +19,13 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -80,6 +90,7 @@ fun TvRoot(controller: TvController) {
         Screen.PLAYER -> PlayerScreen(controller)
         Screen.GRID -> GridScreen(controller)
         Screen.QUALITY -> QualityScreen(controller)
+        Screen.SEARCH -> SearchScreen(controller)
     }
 }
 
@@ -353,6 +364,220 @@ fun GridScreen(controller: TvController) {
             fontSize = 13.sp,
             modifier = Modifier.padding(top = 10.dp)
         )
+    }
+}
+
+/**
+ * Busqueda en la TV.
+ *
+ * El campo de texto es un EditText NATIVO (vía AndroidView): usa el teclado DEL
+ * SISTEMA, que ya sabe manejar acentos, dictados y teclados externos. No hay
+ * ningun teclado propio que mantener.
+ *
+ * La navegacion entre el campo y la lista de resultados sigue siendo determinista
+ * (mismo patron que la grilla), pero cuando el IME del sistema esta abierto las
+ * teclas las maneja el sistema.
+ */
+@Composable
+fun SearchScreen(controller: TvController) {
+    val query by controller.query.collectAsState()
+    val results by controller.searchResults.collectAsState()
+    val focusedId by controller.focusedSearchId.collectAsState()
+    val favorites by controller.favorites.collectAsState()
+    val fieldRequest by controller.searchFieldRequest.collectAsState()
+    val fieldFocused by controller.searchFieldFocused.collectAsState()
+    val resultState = rememberLazyListState()
+    var editText by remember { mutableStateOf<EditText?>(null) }
+
+    // Cuando el controller pide el foco del campo, se lo damos.
+    LaunchedEffect(fieldRequest) {
+        if (fieldRequest > 0) {
+            editText?.requestFocus()
+            editText?.let {
+                val imm = it.context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(it, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    // Si el controller suelta el foco del campo, la UI lo hace tambien
+    // (asi el IME del sistema se cierra).
+    LaunchedEffect(fieldFocused) {
+        if (!fieldFocused) {
+            editText?.clearFocus()
+        }
+    }
+
+    // Scroll minimo para que el resultado enfocado quede a la vista.
+    LaunchedEffect(focusedId, results.size) {
+        val index = results.indexOfFirst { it.id == focusedId }
+        if (index < 0) return@LaunchedEffect
+        val info = resultState.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == index }
+        if (item == null) {
+            resultState.scrollToItem(index)
+        } else {
+            val top = item.offset
+            val bottom = top + item.size
+            val delta = when {
+                bottom > info.viewportEndOffset -> bottom - info.viewportEndOffset
+                top < info.viewportStartOffset -> top - info.viewportStartOffset
+                else -> 0
+            }
+            if (delta != 0) resultState.scrollBy(delta.toFloat())
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(KzBg).padding(24.dp)) {
+        Text(text = "Buscar canal", color = Color(0xFF7C8899), fontSize = 15.sp)
+        Spacer(Modifier.height(6.dp))
+
+        // Campo de texto NATIVO: el teclado del sistema se abre solo al enfocarlo.
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF141B24), RoundedCornerShape(10.dp))
+                .border(
+                    width = if (focusedId == null) 3.dp else 1.dp,
+                    color = if (focusedId == null) KzBlue else Color(0xFF232C38),
+                    shape = RoundedCornerShape(10.dp)
+                )
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AndroidView(
+                modifier = Modifier.weight(1f),
+                factory = { ctx ->
+                    EditText(ctx).apply {
+                        setText(query)
+                        setTextColor(Color.White.toArgb())
+                        setHintTextColor(Color(0xFF56616F).toArgb())
+                        hint = "Escribi el nombre del canal…"
+                        textSize = 22f
+                        isSingleLine = true
+                        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        // Solo texto: el teclado del sistema no trae de mas.
+                        inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                        imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+                        addTextChangedListener(object : android.text.TextWatcher {
+                            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {
+                                controller.setQuery(s?.toString().orEmpty())
+                            }
+                            override fun afterTextChanged(s: android.text.Editable?) {}
+                        })
+                        setOnFocusChangeListener { _, hasFocus ->
+                            controller.setSearchFieldFocused(hasFocus)
+                        }
+                    }
+                },
+                update = { view ->
+                    editText = view
+                    // Solo sincronizamos si el texto cambio por fuera (companion).
+                    if (view.text.toString() != query && !fieldFocused) {
+                        view.setText(query)
+                    }
+                }
+            )
+            if (query.isNotEmpty()) {
+                Text(
+                    text = "×",
+                    color = Color(0xFF7C8899),
+                    fontSize = 24.sp,
+                    modifier = Modifier
+                        .padding(start = 10.dp)
+                        .clickable { controller.clearSearch() }
+                )
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val count = results.size
+            Text(
+                text = if (count == 0) {
+                    if (query.isBlank()) "201 canales" else "Sin coincidencias"
+                } else {
+                    "$count coincidencias"
+                },
+                color = Color(0xFF7C8899),
+                fontSize = 14.sp
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "OK abre el teclado · BACK vuelve",
+                color = Color(0xFF56616F),
+                fontSize = 13.sp
+            )
+        }
+
+        Spacer(Modifier.height(6.dp))
+
+        LazyColumn(
+            state = resultState,
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items(results.size, key = { index -> results[index].id }) { index ->
+                val group = results[index]
+                SearchResultRow(
+                    group = group,
+                    favorite = favorites.contains(group.id) ||
+                        group.variants.any { favorites.contains(it.channelId) },
+                    focused = focusedId == group.id,
+                    onClick = { controller.play(group) }
+                )
+            }
+        }
+    }
+}
+
+/** Fila de un resultado de busqueda. */
+@Composable
+private fun SearchResultRow(
+    group: ChannelGroup,
+    favorite: Boolean,
+    focused: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(if (focused) Color(0xFF1E2A38) else KzCard, RoundedCornerShape(10.dp))
+            .border(
+                width = if (focused) 3.dp else 1.dp,
+                color = if (focused) KzBlue else Color(0xFF232C38),
+                shape = RoundedCornerShape(10.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AsyncImage(
+            model = group.logo,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(44.dp)
+        )
+        Column(Modifier.padding(start = 12.dp).weight(1f)) {
+            Text(
+                text = group.number.toString() + ". " + group.name + if (favorite) "  *" else "",
+                color = Color.White,
+                fontSize = 17.sp,
+                maxLines = 1
+            )
+            Text(
+                text = group.groups.joinToString(" \u00b7 "),
+                color = Color(0xFF6F7C8C),
+                fontSize = 13.sp,
+                maxLines = 1
+            )
+        }
+        if (group.variantCount > 1) {
+            val n = group.variantCount
+            Text(text = "$n calidades", color = KzBlue, fontSize = 13.sp)
+        }
     }
 }
 

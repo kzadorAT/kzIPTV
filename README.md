@@ -3,7 +3,7 @@
 Reproductor IPTV para **Android TV**: listas m3u (iptv-org y propias) con **setup por QR** desde el celular, zapping con **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico + PiP**).
 
 - 📖 Diseño y plan completo: [docs/PLAN.md](docs/PLAN.md)
-- 🧪 Estado de la P0: [docs/P0-STATUS.md](docs/P0-STATUS.md)
+- 🧪 Estado y aprendizajes: [docs/P0-STATUS.md](docs/P0-STATUS.md)
 - Playlist de referencia: <https://iptv-org.github.io/iptv/countries/ar.m3u>
 
 ## Estructura
@@ -17,14 +17,46 @@ kzIPTV/
   docs/PLAN.md                # diseño y plan
 ```
 
-## Qué hay en la P0 (spike)
+## Qué hay hoy (P0 + P1)
 
-- Parser M3U (tvg-id / tvg-logo / group-title / EXTVLCOPT) con tests contra la playlist real de 206 canales.
-- Reproductor ExoPlayer con headers por canal y zapping con CH+ / CH− (keycodes 166/167).
-- Banner de canal con ahora/siguiente (EPG) y favoritos (long-press OK / tecla amarilla).
-- Grilla de canales con logos y categorías.
-- **Server HTTP/WebSocket embebido en la app** (Ktor) que sirve la web del celular + QR de emparejamiento.
-- Companion web (celular): configurar playlists, control remoto, listado y favoritos.
+### En la TV
+
+- **Zapping** con CH+ / CH− (keycodes 166/167) y con los botones del control remoto.
+- **Canales lógicos agrupados**: 206 feeds → **201 señales**. La clave es el `tvg-id` base
+  (`Base.cc@Qualifier` → `Base.cc`); si no hay tvg-id útil, se agrupa por nombre normalizado.
+- **Selector de calidad**: long-press de OK abre las variantes del canal (1080p / 720p /
+  regional) y muestra la resolución **real** medida, no la que promete el nombre del playlist.
+- **Fallback automático**: si un feed muere, se prueban las otras variantes del mismo canal
+  antes de saltar al siguiente.
+- **Búsqueda**: tecla VERDE. El texto se escribe con el **teclado del sistema** (Gboard TV) o
+  desde el celular; los resultados salen en pantalla y se navegan con el D-pad.
+- **Número directo**: teclas **0-9** + OK saltan a un canal por número (ej. `12` → Catamarca TV).
+- **Favoritos** (tecla amarilla), **modo zap solo-favoritos** (tecla roja).
+- **EPG** con ahora/siguiente en el banner y en el listado.
+- **Salvapantallas**: la pantalla no se apaga durante la reproducción (`FLAG_KEEP_SCREEN_ON`).
+- **Setup por QR**: la TV levanta un server embebido, el celular entra por QR con código de 6
+  dígitos y queda emparejado con un token.
+
+### Navegación determinista
+
+El foco de **Compose** no engancha en la TV real (ver [docs/P0-STATUS.md](docs/P0-STATUS.md) §8).
+Por eso el `TvController` es el dueño del foco: el D-pad, el control remoto físico y el
+companion usan **exactamente el mismo código**, y el estado del foco es observable por la API.
+
+### En el celular (companion web)
+
+- Emparejar por QR o por código.
+- Mandar playlists (URL o archivo .m3u).
+- Control remoto completo con D-pad virtual.
+- Listado de canales con EPG y cantidad de calidades.
+- Favoritos, buscar y elegir canal.
+
+### Lo que falta (P2 en adelante)
+
+- **Mosaico + PiP** para comparar canales (lo único grande del pedido original).
+- EPG siempre fresco (descarga periódica + cache en disco).
+- Room + multi-lista, historial, perfiles.
+- Release firmado + R8 + baseline profile.
 
 ## Build local
 
@@ -56,3 +88,6 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 | Sin servidor aparte | la app lleva el server embebido (Ktor) y sirve la web de setup/control por QR |
 | EPG | pipeline semanal gratis: GitHub Action con utilidades iptv-org/epg → XMLTV recortado a la playlist |
 | Comparar canales | mosaico de miniaturas on-device + PiP con 2.º decodificador |
+| Foco en TV | navegación determinista en el `TvController` (el foco de Compose no engancha) |
+| Teclado | el del sistema (Gboard TV): sin teclado propio que mantener |
+| Estado de salud por feed | `ok`/`dead`/`slow` con TTL de 6 h + fallback entre variantes |

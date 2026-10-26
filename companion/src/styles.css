@@ -93,6 +93,12 @@ button.primary { background: var(--blue); color: #06131c; border-color: transpar
   margin-top: 2px;
 }
 .screenhint.focus { color: var(--blue); font-weight: 600; }
+.screenhint.number {
+  color: #f0b429;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.hint { font-size: 0.75rem; color: var(--muted); margin: 6px 0 0; line-height: 1.4; }
 
 .nowplaying {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 12px;

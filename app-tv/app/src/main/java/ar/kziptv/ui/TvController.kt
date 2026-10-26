@@ -14,6 +14,8 @@ import ar.kziptv.data.KzStore
 import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.core.nav.GridNavigator
+import ar.kziptv.core.nav.NumberEntry
+import ar.kziptv.core.nav.RetryPolicy
 import ar.kziptv.input.RemoteKeys
 import ar.kziptv.playback.PlayerManager
 import kotlinx.coroutines.CoroutineScope
@@ -22,12 +24,13 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
 
-enum class Screen { PLAYER, GRID, SETUP, QUALITY }
+enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -81,7 +84,15 @@ data class StateDto(
     val playbackState: String = "idle",
     val playbackError: String = "",
     val videoWidth: Int = 0,
-    val videoHeight: Int = 0
+    val videoHeight: Int = 0,
+    /** Numero de canal escrito con las teclas 0-9 (vacio = no se escribe). */
+    val numberBuffer: String = "",
+    /** Texto de la busqueda en curso. */
+    val searchQuery: String = "",
+    /** Id del resultado de busqueda enfocado (vacio = foco en el campo). */
+    val focusedSearchId: String? = null,
+    /** Nombre del resultado de busqueda enfocado. */
+    val focusedSearchName: String = ""
 )
 
 class TvController(
@@ -118,17 +129,62 @@ class TvController(
     val focusedCategory = MutableStateFlow<String?>(null)
 
     val qualityTarget = MutableStateFlow<ChannelGroup?>(null)
+
+    /**
+     * Numero escrito con las teclas 0-9 para saltar directo a un canal.
+     * Vacio = no se esta escribiendo.
+     */
+    val numberBuffer = MutableStateFlow("")
+
+    /** Resultados de la busqueda por texto (pantalla SEARCH). */
+    val searchResults = MutableStateFlow<List<ChannelGroup>>(emptyList())
+
+    /** Canal enfocado dentro de los resultados de busqueda. */
+    val focusedSearchId = MutableStateFlow<String?>(null)
+
+    /**
+     * Token para pedirle a la UI que enfoque el campo de texto nativo.
+     * Cada pedido incrementa el token; la UI lo observa y hace requestFocus().
+     */
+    val searchFieldRequest = MutableStateFlow(0)
+
+    /**
+     * true cuando el campo de texto NATIVO tiene el foco de plataforma y el IME
+     * del sistema esta abierto. En ese estado el sistema maneja las teclas.
+     */
+    val searchFieldFocused = MutableStateFlow(false)
     val playbackState = MutableStateFlow("idle")
     val playbackError = MutableStateFlow("")
     val videoWidth = MutableStateFlow(0)
     val videoHeight = MutableStateFlow(0)
 
     private var bannerJob: Job? = null
+    private var numberJob: Job? = null
     private var autoSkipJob: Job? = null
     private var consecutiveFailures = 0
 
     /** Reintentos por feed para errores transitorios de live. */
     private val retryCount = mutableMapOf<String, Int>()
+
+    /**
+     * Feeds confirmados como ESTABLES: siguen reproduciendo despues de
+     * [STABLE_PLAYING_MS] sin caerse.
+     *
+     * Un feed que levanta y se cae al segundo dispara "playing" un instante antes
+     * de morir. Si al ver ese "playing" limpiaramos el contador de reintentos, el
+     * feed fallaria para siempre en bucle. Por eso el contador de reintentos solo
+     * se limpia cuando el canal aguanta lo suficiente reproduciendo de verdad.
+     */
+    private val stableVariants = mutableSetOf<String>()
+
+    /** Cuando se vio "playing" por ultima vez (para medir que el canal se mantiene). */
+    private var playingSince = 0L
+
+    /** Job que verifica que el feed aguante lo suficiente. */
+    private var stableJob: Job? = null
+
+    /** Reintentos transitorios totales: corte de seguridad global. */
+    private var transientRetries = 0
 
     /** Arranque del controller: sirve para medir fases (KzStartup). */
     private val bootAt = android.os.SystemClock.elapsedRealtime()
@@ -138,11 +194,12 @@ class TvController(
         // canal siguiente, para no dejar al usuario frente a una pantalla negra.
         player.onStateChanged = { state ->
             if (state == "playing") {
-                consecutiveFailures = 0
-                playbackError.value = ""
                 val id = currentVariant.value?.channelId
-                if (id != null) retryCount.remove(id)
-                markVariant(id, ChannelVariant.STATUS_OK)
+                playbackError.value = ""
+                // Un "playing" instantaneo NO cuenta como canal sano: hay feeds que
+                // levantan y se caen al segundo. El feed se confirma solo si aguanta
+                // STABLE_PLAYING_MS reproduciendo (se verifica con un job).
+                if (id != null) scheduleStableCheck(id)
             }
             playbackState.value = state
         }
@@ -163,22 +220,66 @@ class TvController(
     }
 
     /**
+     * Programa la verificacion de estabilidad del feed que esta reproduciendo.
+     *
+     * No sirve con un evento "playing": un feed que levanta y se cae al segundo
+     * dispara "playing" un instante antes de morir. Hay que esperar a que el
+     * MISMO feed siga en reproduccion dentro de [STABLE_PLAYING_MS].
+     */
+    private fun scheduleStableCheck(id: String) {
+        if (playingSince == 0L) playingSince = android.os.SystemClock.elapsedRealtime()
+        stableJob?.cancel()
+        stableJob = scope.launch {
+            delay(STABLE_PLAYING_MS)
+            // Solo se confirma si sigue siendo el mismo feed y sigue reproduciendo.
+            if (currentVariant.value?.channelId != id) return@launch
+            if (playbackState.value != "playing") return@launch
+            confirmStablePlaying(id)
+        }
+    }
+
+    /**
+     * El feed lleva [STABLE_PLAYING_MS] reproduciendo: ahora si es un canal sano.
+     *
+     * Ahi se limpian los contadores de reintento y se resetea el de fallas seguidas.
+     */
+    private fun confirmStablePlaying(id: String) {
+        val firstTime = stableVariants.add(id)
+        consecutiveFailures = 0
+        transientRetries = 0
+        retryCount.remove(id)
+        markVariant(id, ChannelVariant.STATUS_OK)
+        if (firstTime) android.util.Log.i("KzIPTV", "canal estable: " + id)
+    }
+
+    /**
      * Un feed fallo. Primero se prueban las OTRAS VARIANTES de la misma señal
      * (mismo canal, otro proveedor/calidad); si no queda ninguna, se zaponea.
      */
     private fun onPlaybackError(message: String) {
-        consecutiveFailures++
         playbackState.value = "error"
         playbackError.value = message
         val group = currentGroup.value
         val variant = currentVariant.value
+        // El feed se cayo: deja de ser estable hasta que vuelva a aguantar.
+        stableJob?.cancel()
+        if (variant != null) {
+            stableVariants.remove(variant.channelId)
+            playingSince = 0L
+        }
 
         // Algunos feeds en vivo rotan la playlist antes de que el player la lea
         // (BEHIND_LIVE_WINDOW / IO_READ_POSITION_OUT_OF_RANGE): no son feeds muertos,
         // son reintentos. Re-preparar pide la playlist nueva y funciona.
-        if (variant != null && group != null && isTransient(message)) {
+        if (variant != null && group != null) {
             val attempts = retryCount[variant.channelId] ?: 0
-            if (attempts < MAX_VARIANT_RETRIES) {
+            // Tope global: ningun feed puede reintentar para siempre.
+            if (RetryPolicy.shouldRetry(
+                    message, attempts, MAX_VARIANT_RETRIES,
+                    transientRetries, MAX_TRANSIENT_RETRIES
+                )
+            ) {
+                transientRetries++
                 retryCount[variant.channelId] = attempts + 1
                 android.util.Log.w(
                     "KzIPTV",
@@ -194,6 +295,8 @@ class TvController(
             }
         }
 
+        // Aca el feed quedo muerto de verdad: recien ahora cuenta para el corte.
+        consecutiveFailures++
         if (variant != null) markVariant(variant.channelId, ChannelVariant.STATUS_DEAD)
         val name = group?.name ?: "ese canal"
         android.util.Log.e(
@@ -225,6 +328,10 @@ class TvController(
         const val MAX_AUTO_SKIP = 6
         /** Reintentos del MISMO feed ante errores transitorios de live. */
         const val MAX_VARIANT_RETRIES = 2
+        /** Cuanto debe durar el playback para dar el feed por estable. */
+        const val STABLE_PLAYING_MS = 8_000L
+        /** Tope global de reintentos transitorios antes de cortar. */
+        const val MAX_TRANSIENT_RETRIES = 6
         /** Un feed marcado como muerto se reintenta pasado este tiempo. */
         const val DEAD_TTL_MS = 6 * 60 * 60 * 1000L
         const val BUNDLED_ID = "bundled-ar"
@@ -344,6 +451,9 @@ class TvController(
         player.play(chosen.toChannel())
         currentGroup.value = group
         currentVariant.value = chosen
+        // Feed nuevo: arranca de cero la medicion de estabilidad.
+        stableJob?.cancel()
+        playingSince = 0L
         // Un reintento o fallback NO debe sacar al usuario de la grilla o del picker.
         if (switchToPlayer) screen.value = Screen.PLAYER
         playbackState.value = "buffering"
@@ -430,7 +540,7 @@ class TvController(
 
     fun back() {
         focusedCategory.value = null
-        screen.value = Screen.PLAYER
+        screen.value = if (screen.value == Screen.SEARCH) Screen.GRID else Screen.PLAYER
     }
 
     fun openPairing() {
@@ -496,6 +606,15 @@ class TvController(
             }
             Screen.PLAYER -> openGrid()
             Screen.QUALITY -> focusedVariantId.value?.let { selectVariant(it) }
+            Screen.SEARCH ->
+                if (searchFieldFocused.value) {
+                    // El IME del sistema tiene el foco: no hacemos nada aca.
+                } else if (focusedSearchId.value == null) {
+                    // Foco en el campo: abrimos el teclado DEL SISTEMA.
+                    searchFieldRequest.value = searchFieldRequest.value + 1
+                } else {
+                    playFocusedSearchResult()
+                }
             Screen.SETUP -> Unit
         }
     }
@@ -512,6 +631,144 @@ class TvController(
 
     fun setQuery(query: String) {
         this.query.value = query
+        if (screen.value == Screen.SEARCH) applySearch(query)
+    }
+
+    // ---------------------------------------------------------------------
+    // Entrada directa por numero (teclas 0-9)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Escribe un digito del numero de canal. El buffer se confirma solo a los
+     * 2,5 s, o al instante con OK.
+     */
+    fun onDigit(digit: Int) {
+        val buffer = NumberEntry.append(numberBuffer.value, digit)
+        numberBuffer.value = buffer
+        numberJob?.cancel()
+        numberJob = scope.launch {
+            delay(NumberEntry.TIMEOUT_MS)
+            confirmNumber()
+        }
+        status.value = "Canal $buffer"
+    }
+
+    /** Confirma el numero escrito: busca el canal y lo reproduce. */
+    fun confirmNumber() {
+        numberJob?.cancel()
+        numberJob = null
+        val buffer = numberBuffer.value
+        if (buffer.isBlank()) return
+        numberBuffer.value = ""
+        val target = NumberEntry.resolve(catalog.value, buffer)
+        if (target == null) {
+            status.value = "No hay un canal $buffer"
+            return
+        }
+        play(target)
+    }
+
+    /** Descarta el numero escrito (BACK). */
+    fun cancelNumber() {
+        numberJob?.cancel()
+        numberJob = null
+        numberBuffer.value = ""
+    }
+
+    // ---------------------------------------------------------------------
+    // Busqueda por texto
+    // ---------------------------------------------------------------------
+
+    /** Abre la pantalla de busqueda (con el texto actual, si habia). */
+    fun openSearch() {
+        screen.value = Screen.SEARCH
+        // El foco arranca en el campo de texto (se ve el cursor).
+        focusedSearchId.value = null
+        searchFieldFocused.value = false
+        applySearch(query.value)
+    }
+
+    /**
+     * Recalcula los resultados de la busqueda y ancla el foco.
+     *
+     * Si el foco estaba en el campo de texto se mantiene ahi (null); si estaba
+     * en un resultado y ese sigue existiendo, se mantiene.
+     */
+    fun applySearch(text: String) {
+        val results = NumberEntry.search(catalog.value, text)
+        searchResults.value = results
+        val current = focusedSearchId.value
+        focusedSearchId.value = when {
+            current == null -> null
+            results.any { it.id == current } -> current
+            else -> results.firstOrNull()?.id
+        }
+    }
+
+    /**
+     * Mueve el foco en la pantalla de busqueda.
+     *
+     * El campo de texto y la lista de resultados se recorren con arriba/abajo.
+     * Cuando el IME del sistema esta abierto, el sistema maneja las teclas.
+     */
+    fun moveSearchFocus(code: Int) {
+        if (searchFieldFocused.value) return
+        val list = searchResults.value
+        val onField = focusedSearchId.value == null
+        when (code) {
+            RemoteKeys.DPAD_DOWN -> {
+                if (onField) {
+                    focusedSearchId.value = list.firstOrNull()?.id
+                } else {
+                    val index = list.indexOfFirst { it.id == focusedSearchId.value }
+                    if (index >= 0 && index + 1 < list.size) {
+                        focusedSearchId.value = list[index + 1].id
+                    }
+                }
+            }
+            RemoteKeys.DPAD_UP -> {
+                if (onField) {
+                    // Ya estamos arriba del todo.
+                } else {
+                    val index = list.indexOfFirst { it.id == focusedSearchId.value }
+                    if (index <= 0) {
+                        focusedSearchId.value = null
+                    } else {
+                        focusedSearchId.value = list[index - 1].id
+                    }
+                }
+            }
+        }
+    }
+
+    /** El usuario toco el campo de texto: abre el IME del sistema. */
+    fun requestSearchFieldFocus() {
+        searchFieldRequest.value = searchFieldRequest.value + 1
+    }
+
+    /** El campo nativo gano o perdio el foco de plataforma. */
+    fun setSearchFieldFocused(focused: Boolean) {
+        searchFieldFocused.value = focused
+    }
+
+    /** Limpia la busqueda. */
+    fun clearSearch() {
+        setQuery("")
+    }
+
+    /**
+     * Suelta el foco del campo de texto (para cerrar el IME del sistema).
+     * La UI observa [searchFieldFocused] y hace clearFocus() en el EditText.
+     */
+    fun clearSearchFieldFocus() {
+        searchFieldFocused.value = false
+    }
+
+    /** Reproduce el canal enfocado en la busqueda. */
+    fun playFocusedSearchResult() {
+        val id = focusedSearchId.value ?: return
+        val target = catalog.value.groupById[id] ?: return
+        play(target)
     }
 
     fun setFocused(id: String?) {
@@ -550,6 +807,7 @@ class TvController(
         when (screen.value) {
             Screen.GRID -> moveGridFocus(code)
             Screen.QUALITY -> moveQualityFocus(code)
+            Screen.SEARCH -> moveSearchFocus(code)
             else -> Unit
         }
     }
@@ -654,6 +912,12 @@ class TvController(
             playbackError = playbackError.value,
             videoWidth = videoWidth.value,
             videoHeight = videoHeight.value,
+            numberBuffer = numberBuffer.value,
+            searchQuery = query.value,
+            focusedSearchId = focusedSearchId.value,
+            focusedSearchName = focusedSearchId.value?.let { id ->
+                catalog.value.groupById[id]?.name
+            }.orEmpty(),
             channelCount = catalog.value.groups.size,
             groupCount = catalog.value.groups.size,
             variantCount = catalog.value.variantCount,
@@ -694,17 +958,6 @@ class TvController(
      * Estado de un feed. "dead" caduca a las pocas horas: un fallo de red puntual
      * no debe dejar un canal inutilizado para siempre.
      */
-    /** Errores que se resuelven reintentando el mismo feed. */
-    private fun isTransient(message: String): Boolean {
-        val m = message.uppercase()
-        return m.contains("BEHIND_LIVE_WINDOW") ||
-            m.contains("IO_READ_POSITION_OUT_OF_RANGE") ||
-            m.contains("TIMEOUT") ||
-            m.contains("CONNECTION_RESET") ||
-            m.contains("HOST_NOT_FOUND") ||
-            m.contains("UNEXPECTED_EOF")
-    }
-
     private fun variantStatus(variantId: String): String {
         val raw = store.state.value.variantStatus[variantId] ?: return ChannelVariant.STATUS_UNKNOWN
         if (!raw.startsWith(ChannelVariant.STATUS_DEAD)) return raw

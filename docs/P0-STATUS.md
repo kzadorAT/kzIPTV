@@ -318,3 +318,104 @@ variante elegida.
 - **Feed muerto con TTL**: el estado `dead` expira a las 6 h y el usuario puede reintentar
   explícitamente.
 - **Resolución medida**: se guarda la resolución real detectada por variant (`measuredResolution`).
+---
+
+## 9 · Búsqueda, número directo y el bug del bucle de reintentos
+
+### El teclado propio se descartó: usamos el del sistema
+
+La primera versión de la búsqueda traía un **teclado en pantalla propio** (A-Z, 0-9, ESPACIO,
+BORRAR, LIMPIAR) navegado con el D-pad. La decisión se revirtió por dos motivos:
+
+1. **El teclado del sistema ya existe y anda mejor.** La TV tiene Gboard TV
+   (`com.google.android.inputmethod.latin`) y el IME de TCL. El sistema resuelve acentos,
+   dictado y **teclados físicos externos**; un teclado propio no.
+2. **El foco de Compose no es el foco de Android.** El problema de §8 era que los focus targets
+   de **Compose** no enganchaban. Un `EditText` **nativo** (vía `AndroidView`) usa el sistema de
+   focus de la **plataforma**, que sí funciona. La generalización que hice al principio
+   ("no hay input de texto porque no hay foco") era incorrecta.
+
+**Lo que quedó**:
+
+| Pieza | Qué hace |
+|---|---|
+| `Screen.SEARCH` | pantalla de búsqueda |
+| `AndroidView` + `EditText` | campo de texto **nativo**, con el IME del sistema |
+| `TvController.searchFieldRequest` | token para pedirle a la UI que enfoque el campo |
+| `TvController.searchFieldFocused` | el campo tiene foco de plataforma → el IME está abierto |
+| `TvController.applySearch(q)` | recalcula resultados con `NumberEntry.search` |
+| `NumberEntry` | lógica pura: buffer numérico, resolución por número, búsqueda |
+
+Cuando el IME está abierto, `MainActivity.dispatchKeyEvent` **deja pasar las teclas** (no las
+intercepta): las maneja el sistema. El BACK primero cierra el IME y solo después sale de la
+pantalla.
+
+### Las dos formas de buscar (ninguna necesita teclado propio)
+
+1. **Desde el celular** (camino principal): el companion manda `{"type":"search","text":"..."}` y
+   la TV muestra los resultados. Ya no hace falta tocar la TV.
+2. **Desde la TV**: tecla VERDE → pantalla de búsqueda → OK abre el **IME del sistema**.
+3. **Número directo**: teclas **0-9** escriben el número de canal; se confirma con OK o solo a
+   los 2,5 s. Ej: `12` → Catamarca TV.
+
+### El bug: la app recargaba el mismo canal una y otra vez
+
+**Síntoma**: la TV cargaba el mismo canal repetidamente, sin terminar nunca.
+
+**Causa raíz** (en `TvController.onStateChanged`):
+
+```kotlin
+if (state == "playing") {
+    consecutiveFailures = 0
+    val id = currentVariant.value?.channelId
+    if (id != null) retryCount.remove(id)   // <-- el contador se reiniciaba
+    markVariant(id, ChannelVariant.STATUS_OK)
+}
+```
+
+Un feed moribundo dispara `"playing"` un instante antes de caerse. Al ver ese `"playing"` el
+contador de reintentos se **reiniciaba**, así que el feed volvía a fallar, volvía a decir
+"playing", y el contador se reiniciaba otra vez: **bucle infinito**. Además
+`consecutiveFailures = 0` en el mismo lugar anulaba el corte de seguridad (`MAX_AUTO_SKIP`),
+porque nunca acumulaba fallas.
+
+El logcat lo mostraba clarísimo:
+
+```
+21:24:39  reintento 0 de Cartoon Network Latin America South Atlantic (1080p)
+21:24:51  reintento 0 de Cartoon Network Latin America South Atlantic (1080p)  <-- reinició
+21:24:59  reintento 0 de Cartoon Network Latin America South Atlantic (1080p)  <-- reinició
+21:25:07  reintento 1 de Cartoon Network Latin America South Atlantic (1080p)
+```
+
+**Arreglo**:
+
+- El feed solo se confirma como **estable** si el **mismo** feed sigue reproduciendo después de
+  `STABLE_PLAYING_MS` (8 s). Se verifica con un job programado (`scheduleStableCheck`), no con
+  un evento puntual: un feed sano puede reproducir 30 s seguidos sin emitir más "playing".
+- Recién ahí se limpian `retryCount` y `consecutiveFailures`.
+- Los errores **transitorios** ya no cuentan como "canal muerto": el corte `MAX_AUTO_SKIP`
+  cuenta solo feeds que murieron de verdad.
+- Tope **global** de reintentos (`MAX_TRANSIENT_RETRIES = 6`): aunque un feed se reinicie,
+  ningún feed puede reintentar para siempre.
+- La política quedó en `RetryPolicy` (código puro, testeable sin Android).
+
+**Verificado en la TV** (antes / después):
+
+```
+antes:  reintento 0 -> reintento 0 -> reintento 0 -> reintento 1 -> ... (infinito)
+ahora:  reintento 0 -> reintento 1 -> "error de reproduccion" -> siguiente feed
+```
+
+### Verificado en la TV: búsqueda
+
+```
+VERDE            -> abre la pantalla de búsqueda (201 coincidencias)
+OK               -> abre el IME del sistema (mInputShown=true en dumpsys)
+input text "cartoon" -> "2 coincidencias": Cartoon Network Latin America + Xtrema Cartoons
+BACK             -> cierra el IME, la pantalla sigue en SEARCH
+DOWN             -> baja al primer resultado
+OK               -> reproduce y vuelve al PLAYER
+1 2 + OK        -> salta directo al canal 12 (Catamarca TV)
+```
+

@@ -46,6 +46,10 @@ type StateDto = {
   variantCount: number;
   categories: string[];
   channels: ChannelDto[];
+  numberBuffer: string;
+  searchQuery: string;
+  focusedSearchId: string | null;
+  focusedSearchName: string;
 };
 
 const KEY = {
@@ -218,6 +222,15 @@ export function App() {
                   : "Foco: " + state.focusedName}
               </span>
             ) : null}
+            {state && state.numberBuffer ? (
+              <span class="screenhint number">Canal {state.numberBuffer}</span>
+            ) : null}
+            {state && state.screen === "SEARCH" ? (
+              <span class="screenhint focus">
+                Buscando: {state.searchQuery || "(vacio)"}
+                {state.focusedSearchName ? " \u2192 " + state.focusedSearchName : ""}
+              </span>
+            ) : null}
           </div>
           <span class={"state " + (state?.playbackState || "")}>{state?.playbackState}</span>
         </div>
@@ -270,6 +283,7 @@ export function App() {
             <button onClick={() => key(KEY.BLUE)}>Emparejar / QR</button>
             <button onClick={() => key(KEY.BACK)}>Volver</button>
             <button onClick={() => key(KEY.MENU)}>Menu / QR</button>
+            <button onClick={() => key(KEY.GREEN)}>Buscar</button>
           </div>
           <label>Buscar en la TV</label>
           <div class="row">
@@ -278,7 +292,12 @@ export function App() {
               setSearch(v);
               send({ type: "text", text: v });
             }} placeholder="nombre del canal" />
+            <button onClick={() => send({ type: "search", text: search })}>Buscar en la TV</button>
           </div>
+          <p class="hint">
+            Escribe aca y la TV muestra los resultados en pantalla. Tambien podes buscar
+            con las teclas 0-9 para ir directo a un numero de canal.
+          </p>
           <p class="msg">{state ? state.status : ""}</p>
           {state && state.playbackError ? (
             <p class="msg err">Error de reproducción: {state.playbackError}</p>

@@ -75,7 +75,12 @@ class MainActivity : ComponentActivity() {
             event.keyCode == RemoteKeys.DPAD_LEFT || event.keyCode == RemoteKeys.DPAD_RIGHT
         ) {
             val screen = controller.screen.value
-            if (screen == Screen.GRID || screen == Screen.QUALITY) {
+            // Si el campo de busqueda tiene el foco de plataforma, el IME del
+            // sistema esta abierto: las teclas las maneja el, no nosotros.
+            val imeOpen = screen == Screen.SEARCH && controller.searchFieldFocused.value
+            if (!imeOpen &&
+                (screen == Screen.GRID || screen == Screen.QUALITY || screen == Screen.SEARCH)
+            ) {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.onDpad(event.keyCode)
                 return true
             }
@@ -97,8 +102,19 @@ class MainActivity : ComponentActivity() {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.toggleFavorite()
                 return true
             }
+            RemoteKeys.PROG_GREEN -> {
+                if (event.action == KeyEvent.ACTION_DOWN) controller.openSearch()
+                return true
+            }
             RemoteKeys.PROG_BLUE, RemoteKeys.MENU -> {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.openPairing()
+                return true
+            }
+            in RemoteKeys.DIGIT_0..RemoteKeys.DIGIT_9,
+            in RemoteKeys.NUMPAD_0..RemoteKeys.NUMPAD_9 -> {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    RemoteKeys.digitOf(event.keyCode)?.let { controller.onDigit(it) }
+                }
                 return true
             }
             RemoteKeys.OK, RemoteKeys.ENTER -> {
@@ -107,11 +123,29 @@ class MainActivity : ComponentActivity() {
                     return true
                 }
                 val longPress = event.eventTime - okDownAt >= 600
-                controller.onOk(longPress)
+                // Si hay un numero de canal escrito, el OK lo confirma.
+                if (controller.numberBuffer.value.isNotBlank()) {
+                    controller.confirmNumber()
+                } else if (controller.searchFieldFocused.value) {
+                    // El IME del sistema esta abierto: OK le pertenece a el.
+                    return false
+                } else {
+                    controller.onOk(longPress)
+                }
                 return true
             }
             RemoteKeys.BACK -> {
-                if (event.action == KeyEvent.ACTION_UP) controller.back()
+                if (event.action == KeyEvent.ACTION_UP) {
+                    if (controller.numberBuffer.value.isNotBlank()) {
+                        controller.cancelNumber()
+                    } else if (controller.searchFieldFocused.value) {
+                        // Cierra el IME del sistema y deja el foco en la pantalla.
+                        controller.setSearchFieldFocused(false)
+                        controller.clearSearchFieldFocus()
+                    } else {
+                        controller.back()
+                    }
+                }
                 return true
             }
         }

@@ -232,6 +232,10 @@ class EmbeddedServer(
                     "quality" -> controller.openQuality()
                     "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
                     "text" -> controller.setQuery(command.text.orEmpty())
+                    "search" -> {
+                        controller.setQuery(command.text.orEmpty())
+                        controller.openSearch()
+                    }
                     "category" -> controller.setCategory(command.category)
                     "grid" -> controller.openGrid()
                     else -> Unit

@@ -16,4 +16,23 @@ object RemoteKeys {
     const val DPAD_DOWN = 20
     const val DPAD_LEFT = 21
     const val DPAD_RIGHT = 22
+
+    /** Digitos 0..9 del control remoto (KEYCODE_0..KEYCODE_9). */
+    const val DIGIT_0 = 7
+    const val DIGIT_9 = 16
+
+    /** Digitos del teclado numerico (KEYCODE_NUMPAD_0..KEYCODE_NUMPAD_9). */
+    const val NUMPAD_0 = 96
+    const val NUMPAD_9 = 105
+
+    /**
+     * Devuelve el digito de un keycode (0..9) o null si no es un numero.
+     * Manyos controles remotos mandan KEYCODE_NUMPAD_* cuando el usuario
+     * escribe un numero en la pantalla de busqueda.
+     */
+    fun digitOf(keyCode: Int): Int? = when (keyCode) {
+        in DIGIT_0..DIGIT_9 -> keyCode - DIGIT_0
+        in NUMPAD_0..NUMPAD_9 -> keyCode - NUMPAD_0
+        else -> null
+    }
 }
