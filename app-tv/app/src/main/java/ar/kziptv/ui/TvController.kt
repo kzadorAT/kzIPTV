@@ -126,7 +126,13 @@ class TvController(
     val category = MutableStateFlow<String?>(null)
     val query = MutableStateFlow("")
     val epg = MutableStateFlow(EpgIndex(emptyList()))
+    /** Ultimo mensaje de estado (lo que ve el companion en /api/state). */
     val status = MutableStateFlow("Cargando…")
+
+    /** true mientras el cartel de estado debe verse en pantalla. */
+    val statusVisible = MutableStateFlow(true)
+
+    private var statusJob: Job? = null
     val serverUrl = MutableStateFlow("")
     val pairingCode = MutableStateFlow("")
     val zapFavoritesOnly = MutableStateFlow(false)
@@ -347,7 +353,7 @@ class TvController(
                     "KzIPTV",
                     "reintento " + attempts + " de " + variant.name + " (error transitorio: " + message + ")"
                 )
-                status.value = "Reintentando ${group.name}\u2026"
+                setStatus("Reintentando ${group.name}\u2026")
                 autoSkipJob?.cancel()
                 autoSkipJob = scope.launch {
                     delay(1500)
@@ -365,10 +371,10 @@ class TvController(
             "KzIPTV",
             "error de reproduccion: " + name + " / " + (variant?.name ?: "-") + " -> " + message
         )
-        status.value = "\u26A0 $name no se reproduce ($message)"
+        setStatus("\u26A0 $name no se reproduce ($message)", sticky = true)
         autoSkipJob?.cancel()
         if (consecutiveFailures > MAX_AUTO_SKIP) {
-            status.value = "\u26A0 Ningun canal responde. Revisa la conexion o la playlist."
+            setStatus("\u26A0 Ningun canal responde. Revisa la conexion o la playlist.", sticky = true)
             return
         }
         val alternative = group?.variants?.firstOrNull {
@@ -433,7 +439,7 @@ class TvController(
                         else -> repo.fetch(source.url)
                     }
                 } catch (e: Exception) {
-                    status.value = "No pude leer ${source.name}: ${e.message}"
+                    setStatus("No pude leer ${source.name}: ${e.message}", sticky = true)
                     null
                 } ?: return@forEach
                 all += withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
@@ -471,9 +477,9 @@ class TvController(
     private suspend fun applyChannels(channels: List<Channel>) {
         catalog.value = withContext(Dispatchers.IO) { ChannelCatalog(channels) }
         favorites.value = store.state.value.favorites.toSet()
-        status.value = "${catalog.value.groups.size} canales" +
+        setStatus("${catalog.value.groups.size} canales" +
             (if (catalog.value.variantCount > catalog.value.groups.size) " (${catalog.value.variantCount} feeds)" else "") +
-            " cargados"
+            " cargados")
     }
 
     private fun loadBundledEpg() {
@@ -495,7 +501,7 @@ class TvController(
             }
             if (programs.isNotEmpty()) {
                 epg.value = EpgIndex(programs)
-                status.value = "${catalog.value.groups.size} canales \u00b7 ${programs.size} programas EPG"
+                setStatus("${catalog.value.groups.size} canales \u00b7 ${programs.size} programas EPG")
             }
             android.util.Log.i(
                 "KzStartup",
@@ -548,7 +554,7 @@ class TvController(
     ) {
         val chosen = variant ?: chooseVariant(group)
         if (!chosen.playable) {
-            status.value = "\u00ab${group.name}\u00bb no es reproducible en Android TV"
+            setStatus("\u00ab${group.name}\u00bb no es reproducible en Android TV", sticky = true)
             return
         }
         player.play(chosen.toChannel())
@@ -628,7 +634,7 @@ class TvController(
         scope.launch {
             store.update { it.copy(favorites = updated.toList()) }
         }
-        status.value = if (!wasFavorite) "\u2605 ${group.name} agregado a favoritos" else "${group.name} quitado de favoritos"
+        setStatus(if (!wasFavorite) "\u2605 ${group.name} agregado a favoritos" else "${group.name} quitado de favoritos")
     }
 
     fun toggleZapMode() {
@@ -636,7 +642,7 @@ class TvController(
         scope.launch {
             store.update { it.copy(zapFavoritesOnly = zapFavoritesOnly.value) }
         }
-        status.value = if (zapFavoritesOnly.value) "Zap: solo FAVORITOS" else "Zap: todos los canales"
+        setStatus(if (zapFavoritesOnly.value) "Zap: solo FAVORITOS" else "Zap: todos los canales")
     }
 
     fun openGrid() {
@@ -696,7 +702,7 @@ class TvController(
     fun openMosaic() {
         val list = mosaicSource()
         if (list.isEmpty()) {
-            status.value = "No hay canales para comparar"
+            setStatus("No hay canales para comparar")
             return
         }
         mosaicChannels.value = list
@@ -969,7 +975,7 @@ class TvController(
             ?: focusedGroupId.value?.let { catalog.value.groupById[it] }
             ?: currentGroup.value
         if (target == null) {
-            status.value = "No hay canal seleccionado"
+            setStatus("No hay canal seleccionado")
             return
         }
         qualityTarget.value = enrich(target)
@@ -1084,7 +1090,7 @@ class TvController(
             delay(NumberEntry.TIMEOUT_MS)
             confirmNumber()
         }
-        status.value = "Canal $buffer"
+        setStatus("Canal $buffer")
     }
 
     /** Confirma el numero escrito: busca el canal y lo reproduce. */
@@ -1096,7 +1102,7 @@ class TvController(
         numberBuffer.value = ""
         val target = NumberEntry.resolve(catalog.value, buffer)
         if (target == null) {
-            status.value = "No hay un canal $buffer"
+            setStatus("No hay un canal $buffer")
             return
         }
         play(target)
@@ -1418,6 +1424,22 @@ class TvController(
         if (store.state.value.variantStatus[variantId] == value) return
         scope.launch {
             store.update { it.copy(variantStatus = it.variantStatus + (variantId to value)) }
+        }
+    }
+
+    /**
+     * Muestra un cartel en pantalla. Los avisos normales se van solos a los 3,5 s;
+     * los errores (sticky = true) quedan hasta que llegue otro mensaje.
+     */
+    fun setStatus(text: String, sticky: Boolean = false) {
+        status.value = text
+        statusVisible.value = true
+        statusJob?.cancel()
+        if (!sticky && text.isNotBlank()) {
+            statusJob = scope.launch {
+                delay(3500)
+                statusVisible.value = false
+            }
         }
     }
 

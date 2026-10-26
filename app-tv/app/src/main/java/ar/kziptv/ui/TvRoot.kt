@@ -125,6 +125,7 @@ fun PlayerScreen(controller: TvController) {
     val banner by controller.bannerVisible.collectAsState()
     val favorites by controller.favorites.collectAsState()
     val status by controller.status.collectAsState()
+    val statusVisible by controller.statusVisible.collectAsState()
     val playbackState by controller.playbackState.collectAsState()
     val playbackError by controller.playbackError.collectAsState()
 
@@ -140,12 +141,24 @@ fun PlayerScreen(controller: TvController) {
             modifier = Modifier.fillMaxSize()
         )
 
-        Text(
-            text = status,
-            color = Color.White.copy(alpha = 0.55f),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(16.dp)
-        )
+        // Cartel de estado: se ve unos segundos y se va (no queda pegado).
+        if (statusVisible && status.isNotBlank()) {
+            Box(
+                Modifier
+                    .align(Alignment.TopStart)
+                    .padding(18.dp)
+            ) {
+                Text(
+                    text = status,
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0xE61B2029))
+                        .padding(horizontal = 18.dp, vertical = 10.dp)
+                )
+            }
+        }
 
         if (banner && current != null) {
             BannerOverlay(
@@ -274,21 +287,36 @@ fun GridScreen(controller: TvController) {
 
     // El foco lo maneja el controller (navegacion determinista). Aca solo se
     // scrollea lo justo para que el canal enfocado quede a la vista.
+    // OJO: el estado DEBE pasarse al LazyVerticalGrid (si no, el scroll no existe).
     LaunchedEffect(focusedId, list.size, selectedCategory) {
         val index = list.indexOfFirst { it.id == focusedId }
         if (index < 0) return@LaunchedEffect
         val info = gridState.layoutInfo
-        val item = info.visibleItemsInfo.firstOrNull { it.index == index }
-        if (item == null) {
-            gridState.scrollToItem(index)
-        } else {
-            val top = item.offset.y
-            val bottom = top + item.size.height
+        val visible = info.visibleItemsInfo
+        val target = visible.firstOrNull { it.index == index }
+        if (target != null) {
+            val top = target.offset.y
+            val bottom = top + target.size.height
             val delta = when {
                 bottom > info.viewportEndOffset -> bottom - info.viewportEndOffset
                 top < info.viewportStartOffset -> top - info.viewportStartOffset
                 else -> 0
             }
+            if (delta != 0) gridState.scrollBy(delta.toFloat())
+        } else {
+            // El item enfocado todavia no esta compuesto: se avanza lo justo
+            // (una fila por paso) para que entre en pantalla.
+            val pitch = visible.zipWithNext()
+                .firstOrNull { (a, b) -> b.offset.y > a.offset.y }
+                ?.let { (a, b) -> b.offset.y - a.offset.y }
+                ?: visible.firstOrNull()?.size?.height
+                ?: return@LaunchedEffect
+            val anchor = if (index > (visible.lastOrNull()?.index ?: -1)) {
+                visible.lastOrNull()
+            } else {
+                visible.firstOrNull()
+            } ?: return@LaunchedEffect
+            val delta = (index - anchor.index) * pitch
             if (delta != 0) gridState.scrollBy(delta.toFloat())
         }
     }
@@ -342,6 +370,7 @@ fun GridScreen(controller: TvController) {
             Spacer(Modifier.height(16.dp))
 
             LazyVerticalGrid(
+                state = gridState,
                 columns = GridCells.Fixed(columns),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
