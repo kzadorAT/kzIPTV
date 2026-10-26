@@ -49,6 +49,8 @@ data class PersistedState(
     val qualityPreference: Map<String, String> = emptyMap(),
     val variantStatus: Map<String, String> = emptyMap(),
     val measuredResolution: Map<String, String> = emptyMap(),
+    /** URL de la guia EPG remota (vacio = se usa la guia embebida). */
+    val epgUrl: String = "",
 )
 
 /** Entrada del historial de reproducciones. */
@@ -348,7 +350,8 @@ class KzStore(
 
     companion object {
         private const val TAG = "KzStore"
-        private const val EPG_CACHE_KEY = "bundled-ar"
+        /** Clave unica del cache EPG: describe siempre lo que hay en `epg_programs`. */
+        private const val EPG_CACHE_KEY = "active"
         private const val MAX_HISTORY_ROWS = 500
     }
 }

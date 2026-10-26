@@ -19,8 +19,8 @@ class KzDatabaseMigrationTest {
     )
 
     @Test
-    fun migraV1AV3SinPerderDatos() {
-        val dbName = "migration-room-v1-v3"
+    fun migraV1AV4SinPerderDatos() {
+        val dbName = "migration-room-v1-v4"
         helper.createDatabase(dbName, 1).apply {
             execSQL(
                 "INSERT INTO playlists " +
@@ -40,10 +40,11 @@ class KzDatabaseMigrationTest {
 
         val migrated = helper.runMigrationsAndValidate(
             dbName,
-            3,
+            4,
             true,
             KzDatabase.MIGRATION_1_2,
             KzDatabase.MIGRATION_2_3,
+            KzDatabase.MIGRATION_3_4,
         )
 
         migrated.query("SELECT content FROM playlists WHERE id='bundled-ar'").use { cursor ->
@@ -53,6 +54,11 @@ class KzDatabaseMigrationTest {
         migrated.query("SELECT pairingCode FROM app_settings WHERE id=1").use { cursor ->
             assertTrue(cursor.moveToFirst())
             assertEquals("593819", cursor.getString(0))
+        }
+        // La URL de la guia EPG entra en el esquema 4: vacia y sin romper nada.
+        migrated.query("SELECT epgUrl FROM app_settings WHERE id=1").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("", cursor.getString(0))
         }
         migrated.execSQL(
             "INSERT INTO watch_history " +

@@ -50,6 +50,10 @@ type StateDto = {
   searchQuery: string;
   focusedSearchId: string | null;
   focusedSearchName: string;
+  epgUrl: string;
+  epgSource: string;
+  epgUpdatedAt: number;
+  epgRefreshing: boolean;
 };
 
 const KEY = {
@@ -89,6 +93,8 @@ export function App() {
   const [message, setMessage] = useState<string>("");
   const [search, setSearch] = useState<string>("");
   const [qualityFor, setQualityFor] = useState<ChannelDto | null>(null);
+  const [epgUrl, setEpgUrl] = useState<string>("");
+  const [epgTouched, setEpgTouched] = useState<boolean>(false);
   const socket = useRef<WebSocket | null>(null);
 
   // estado de la TV (polling simple y robusto)
@@ -109,6 +115,12 @@ export function App() {
       clearInterval(timer);
     };
   }, []);
+
+  // la URL de la guia la tiene la TV: se muestra sola, pero sin pisar lo que
+  // el usuario esta escribiendo
+  useEffect(() => {
+    if (!epgTouched && state?.epgUrl) setEpgUrl(state.epgUrl);
+  }, [state?.epgUrl, epgTouched]);
 
   // websocket para comandos
   useEffect(() => {
@@ -172,6 +184,12 @@ export function App() {
     setMessage("Subiendo " + file.name + "...");
     const res = await api("/api/source", { name: file.name, content: text, token: token() });
     setMessage(res.ok ? "Listo: " + res.count + " canales" : "Error: " + res.message);
+  };
+
+  const sendEpg = async () => {
+    setMessage("Actualizando la guia EPG...");
+    const res = await api("/api/epg", { url: epgUrl.trim(), token: token() });
+    setMessage(res.ok ? "Guia EPG: " + (res.message || "actualizando") : "Error: " + (res.message || "rechazada"));
   };
 
   const toggleFavorite = async (channelId: string, enabled: boolean) => {
@@ -255,6 +273,18 @@ export function App() {
             <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
             <button class="primary" onClick={sendSource}>Enviar</button>
           </div>
+          <label>URL de la guia EPG (XMLTV, puede ir .gz)</label>
+          <div class="row">
+            <input
+              value={epgUrl}
+              onInput={(e) => {
+                setEpgTouched(true);
+                setEpgUrl((e.target as HTMLInputElement).value);
+              }}
+              placeholder="https://raw.githubusercontent.com/.../epg/ar.xml.gz"
+            />
+            <button class="primary" onClick={sendEpg}>Actualizar</button>
+          </div>
           <label>...o subi un archivo m3u</label>
           <input type="file" accept=".m3u,.m3u8" onChange={(e) => {
             const file = (e.target as HTMLInputElement).files?.[0];
@@ -280,6 +310,7 @@ export function App() {
             <button onClick={() => key(KEY.YELLOW)}>★ Favorito</button>
             <button onClick={() => key(KEY.RED)}>Zap favoritos</button>
             <button onClick={() => send({ type: "quality" })}>Calidad</button>
+            <button onClick={() => send({ type: "epg" })}>Guia EPG</button>
             <button onClick={() => send({ type: "mosaic" })}>Comparar canales</button>
             <button onClick={() => key(KEY.BLUE)}>Emparejar / QR</button>
             <button onClick={() => key(KEY.BACK)}>Volver</button>

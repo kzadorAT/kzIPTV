@@ -397,3 +397,36 @@ sentido con una playlist multi-audio: de 24 streams medidos, 0 pistas de audio y
 2. Nada se implementa sin quedar anotado antes acá y en `docs/HANDOVER.md` §9.
 3. Un bug real sube al principio de la lista de P1 del handover, aunque sea de una línea.
 4. Lo que ya estaba en el plan se ignora al reportarlo: se confirma y sigue.
+---
+
+## 16 · EPG fresco (P1) — **en curso desde el 26/10/2026**
+
+Este es el pendiente que se retoma después del handover del 26/10/2026 (§9, ítem 4). El otro
+pendiente de P1 ("refresh de playlist con diff") queda para el siguiente chat.
+
+**Qué se ve en la TV**: la guía se actualiza sola, sin reinstalar el APK. El usuario pega desde el
+celular (companion) la URL del XMLTV que publica el pipeline semanal (`epg/ar.xml.gz`) y la TV
+la baja, la parsea y cambia la guía en caliente. En **AJUSTES** aparece una fila **"Guía EPG"**
+que muestra el origen y la última carga; con OK se fuerza la descarga.
+
+**Decisiones**:
+
+1. **La URL es un dato de la app, no del build**: se guarda en Room (`app_settings.epgUrl`,
+   esquema v4) y se cambia por la API del companion (`POST /api/epg`). Así el repo se puede
+   publicar en GitHub más adelante sin recompilar la app.
+2. **Dos caches**: el **archivo crudo** en disco (`cacheDir/epg/ar.xml.gz`) y los **programas
+   parseados** en Room (`epg_programs` + `epg_cache_meta`, con el fingerprint SHA-256 del
+   XMLTV como clave). Con el cache de Room el arranque no parsea 2 MB: en la TV se midió
+   **10,5 s → 5,5 s**.
+3. **TTL de 24 h**: si el archivo en disco tiene menos de 24 h se usa tal cual; si no, se vuelve
+   a bajar. El pipeline es semanal, así que 24 h sobra.
+4. **Todo en background**: descarga, gunzip y parseo van en `Dispatchers.IO` (el parseo de 2 MB
+   en el hilo principal ya había producido un ANR).
+5. **Fallback**: si la descarga falla se sigue con la guía que haya en pantalla y, si no hay
+   ninguna, con el asset embebido. Un error de red no puede dejar la TV sin guía.
+6. **Una sola fuente activa**: `epg_cache_meta` describe siempre lo que hay en la tabla (clave
+   única `active`), así que nunca se puede devolver una guía vieja como si fuera la nueva.
+
+**Pendiente**: la URL por defecto (el repo todavía no está publicado: `git remote -v` no trae
+ningún remoto) y el resto de la fila de Ajustes (persistencia del server, selector de lista).
+

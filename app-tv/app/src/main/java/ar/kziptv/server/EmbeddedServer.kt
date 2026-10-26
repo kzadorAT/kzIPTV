@@ -44,6 +44,17 @@ data class SourceRequest(val url: String = "", val name: String = "", val conten
 data class FavoriteRequest(val channelId: String = "", val enabled: Boolean? = null, val token: String? = null)
 
 @Serializable
+data class EpgRequest(val url: String = "", val token: String? = null)
+
+@Serializable
+data class EpgResponse(
+    val ok: Boolean,
+    val message: String = "",
+    val programCount: Int = 0,
+    val source: String = ""
+)
+
+@Serializable
 data class CommandRequest(
     val type: String = "",
     val code: Int? = null,
@@ -139,6 +150,23 @@ class EmbeddedServer(
                 }
             }
 
+            post("/api/epg") {
+                val request = call.receive<EpgRequest>()
+                if (!validToken(request.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
+                val ok = controller.setEpgUrl(request.url)
+                call.respond(
+                    EpgResponse(
+                        ok = ok,
+                        message = if (ok) "Guia EPG: actualizando" else "URL invalida",
+                        programCount = controller.epg.value.programs.size,
+                        source = controller.epgSource.value
+                    )
+                )
+            }
+
             post("/api/favorite") {
                 val request = call.receive<FavoriteRequest>()
                 if (!validToken(request.token)) {
@@ -232,6 +260,11 @@ class EmbeddedServer(
                         }
                     }
                     "quality" -> controller.openQuality()
+                    // "epg" con texto = cambia la URL de la guia; sin texto = la recarga
+                    "epg" -> {
+                        val epgUrl = command.text?.trim().orEmpty()
+                        if (epgUrl.isNotBlank()) controller.setEpgUrl(epgUrl) else controller.refreshEpg()
+                    }
                     "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
                     "text" -> controller.setQuery(command.text.orEmpty())
                     "search" -> {

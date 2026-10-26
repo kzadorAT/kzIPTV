@@ -7,11 +7,13 @@ import ar.kziptv.core.catalog.ChannelGrouper
 import ar.kziptv.core.epg.EpgCache
 import ar.kziptv.core.epg.EpgIndex
 import ar.kziptv.core.epg.EpgParser
+import ar.kziptv.core.epg.EpgSource
 import ar.kziptv.core.model.Channel
 import ar.kziptv.core.model.ChannelGroup
 import ar.kziptv.core.model.ChannelVariant
 import ar.kziptv.core.model.toChannel
 import ar.kziptv.core.parse.M3uParser
+import ar.kziptv.data.EpgRepository
 import ar.kziptv.data.KzStore
 import ar.kziptv.data.PlaylistMerge
 import ar.kziptv.data.PersistedSource
@@ -41,7 +43,7 @@ import java.util.zip.GZIPInputStream
 enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS }
 
 /** Filas de la pantalla de ajustes (el orden es el de navegacion). */
-enum class Setting { SERVER, PAIRING, ZAP, VIDEO }
+enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -105,7 +107,15 @@ data class StateDto(
     /** Id del resultado de busqueda enfocado (vacio = foco en el campo). */
     val focusedSearchId: String? = null,
     /** Nombre del resultado de busqueda enfocado. */
-    val focusedSearchName: String = ""
+    val focusedSearchName: String = "",
+    /** URL configurada de la guia EPG remota (vacio = se usa la embebida). */
+    val epgUrl: String = "",
+    /** De donde sale la guia: "embebido" o "remoto". */
+    val epgSource: String = "",
+    /** Cuando se cargo la guia actual (epoch ms). */
+    val epgUpdatedAt: Long = 0,
+    /** true mientras se esta descargando o parseando la guia. */
+    val epgRefreshing: Boolean = false
 )
 
 class TvController(
@@ -131,6 +141,21 @@ class TvController(
     val category = MutableStateFlow<String?>(null)
     val query = MutableStateFlow("")
     val epg = MutableStateFlow(EpgIndex(emptyList()))
+
+    /** Descarga de la guia EPG remota y cache en disco. */
+    private val epgRepo = EpgRepository(context)
+
+    /** URL configurada de la guia EPG (espejo del store para la UI). */
+    val epgUrl = MutableStateFlow("")
+
+    /** De donde sale la guia actual: "embebido" o "remoto". */
+    val epgSource = MutableStateFlow("embebido")
+
+    /** Cuando se cargo la guia actual (epoch ms). */
+    val epgUpdatedAt = MutableStateFlow(0L)
+
+    /** true mientras se esta descargando o parseando la guia. */
+    val epgRefreshing = MutableStateFlow(false)
     /** Ultimo mensaje de estado (lo que ve el companion en /api/state). */
     val status = MutableStateFlow("Cargando…")
 
@@ -453,6 +478,7 @@ class TvController(
             val resolvedPairingCode = persistedState.pairingCode.ifBlank { generateCode() }
             pairingCode.value = resolvedPairingCode
             zapFavoritesOnly.value = persistedState.zapFavoritesOnly
+            epgUrl.value = persistedState.epgUrl
             val sources = persistedState.sources.ifEmpty {
                 listOf(PersistedSource(id = BUNDLED_ID, name = "iptv-org \u00b7 Argentina", url = BUNDLED_URL, bundled = true))
             }
@@ -482,7 +508,7 @@ class TvController(
                 "playlist lista en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
                     " ms (" + all.size + " feeds / " + catalog.value.groups.size + " canales)"
             )
-            loadBundledEpg()
+            loadEpgAsync()
             if (all.isEmpty()) {
                 screen.value = Screen.SETUP
             } else {
@@ -508,32 +534,156 @@ class TvController(
             " cargados")
     }
 
-    private fun loadBundledEpg() {
-        scope.launch {
-            // Todo el parseo del XMLTV (~2 MB) va en IO: en el hilo principal provocaba ANR.
-            var fromCache = false
+    /**
+     * Carga la guia EPG en segundo plano (no frena el arranque: el playback ya empezo).
+     *
+     * Si hay una URL remota configurada (la que publica el pipeline semanal) esa
+     * manda: se usa el archivo de disco mientras no venza (24 h) y los programas
+     * parseados que Room tiene cacheados. Sin URL, se usa el asset embebido.
+     */
+    private fun loadEpgAsync() {
+        scope.launch { loadEpg() }
+    }
+
+    private suspend fun loadEpg() {
+        val remoteUrl = store.state.value.epgUrl.trim()
+        if (remoteUrl.isNotBlank()) {
+            loadRemoteEpg(remoteUrl, forceDownload = false)
+        } else {
+            loadBundledEpg()
+        }
+    }
+
+    /** Guia embebida en el APK: la que se usa si no hay URL remota configurada. */
+    private suspend fun loadBundledEpg() {
+        // Todo el parseo del XMLTV (~2 MB) va en IO: en el hilo principal provocaba ANR.
+        var fromCache = false
+        val programs = withContext(Dispatchers.IO) {
+            val text = readBundledEpgText() ?: return@withContext emptyList()
+            val fingerprint = EpgCache.fingerprint(text)
+            val cached = store.cachedEpgPrograms(fingerprint)
+            if (cached != null) {
+                fromCache = true
+                cached
+            } else {
+                EpgParser.parse(text).also { parsed ->
+                    store.cacheEpgPrograms(fingerprint, parsed)
+                }
+            }
+        }
+        if (programs.isNotEmpty()) {
+            epg.value = EpgIndex(programs)
+            epgSource.value = "embebido"
+            epgUpdatedAt.value = System.currentTimeMillis()
+            setStatus("${catalog.value.groups.size} canales \u00b7 ${programs.size} programas EPG")
+        }
+        android.util.Log.i(
+            "KzStartup",
+            "EPG listo en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
+                " ms (" + (if (fromCache) "cache" else "parse") + ")",
+        )
+    }
+
+    /**
+     * Guia remota: descarga (con TTL de 24 h), gunzip, parseo y cache en Room.
+     *
+     * Si algo falla se sigue con la guia que haya en pantalla y, si no hay ninguna,
+     * con el asset embebido: un error de red no puede dejar la TV sin guia.
+     */
+    private suspend fun loadRemoteEpg(url: String, forceDownload: Boolean) {
+        epgRefreshing.value = true
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        try {
+            var fromDisk = false
+            var fromRoom = false
             val programs = withContext(Dispatchers.IO) {
-                val text = readBundledEpgText() ?: return@withContext emptyList()
+                val cachedBytes = if (forceDownload) null else epgRepo.readCachedBytes()
+                val usableCache = cachedBytes?.takeIf {
+                    !EpgSource.needsRefresh(epgRepo.cachedAt(), System.currentTimeMillis())
+                }
+                val data = if (usableCache != null) {
+                    fromDisk = true
+                    usableCache
+                } else {
+                    epgRepo.fetchBytes(url).also { epgRepo.writeCachedBytes(it) }
+                }
+                val text = EpgSource.decode(data) ?: error("el archivo no es un XMLTV valido")
                 val fingerprint = EpgCache.fingerprint(text)
-                val cached = store.cachedEpgPrograms(fingerprint)
-                if (cached != null) {
-                    fromCache = true
-                    cached
+                val cachedPrograms = store.cachedEpgPrograms(fingerprint)
+                if (cachedPrograms != null) {
+                    fromRoom = true
+                    cachedPrograms
                 } else {
                     EpgParser.parse(text).also { parsed ->
                         store.cacheEpgPrograms(fingerprint, parsed)
                     }
                 }
             }
-            if (programs.isNotEmpty()) {
-                epg.value = EpgIndex(programs)
-                setStatus("${catalog.value.groups.size} canales \u00b7 ${programs.size} programas EPG")
-            }
+            if (programs.isEmpty()) error("la guia no tiene programas")
+            epg.value = EpgIndex(programs)
+            epgSource.value = "remoto"
+            epgUpdatedAt.value = System.currentTimeMillis()
+            setStatus("Guia EPG actualizada: ${programs.size} programas")
             android.util.Log.i(
                 "KzStartup",
-                "EPG listo en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
-                    " ms (" + (if (fromCache) "cache" else "parse") + ")",
+                "EPG remoto listo en " + (android.os.SystemClock.elapsedRealtime() - startedAt) +
+                    " ms (" + (if (fromDisk) "cache disco" else "descarga") +
+                    (if (fromRoom) " + cache Room" else " + parseo") +
+                    ", " + programs.size + " programas)",
             )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w(
+                "KzStartup",
+                "No se pudo actualizar la guia EPG remota: " + (e.message ?: e::class.java.simpleName),
+            )
+            if (epg.value.programs.isEmpty()) loadBundledEpg()
+        } finally {
+            epgRefreshing.value = false
+        }
+    }
+
+    /**
+     * Configura la URL de la guia EPG remota (la que publica el pipeline).
+     * La llama el companion o la API: la guia se recarga en el acto.
+     */
+    fun setEpgUrl(url: String): Boolean {
+        val clean = url.trim()
+        if (clean.isNotBlank() && !EpgSource.isRemoteUrl(clean)) {
+            setStatus("La URL de la guia EPG no es valida", sticky = true)
+            return false
+        }
+        epgUrl.value = clean
+        scope.launch {
+            store.update { it.copy(epgUrl = clean) }
+            epgRepo.clearCache()
+            loadEpg()
+        }
+        return true
+    }
+
+    /** Fuerza la recarga de la guia (fila "Guia EPG" de Ajustes o comando del companion). */
+    fun refreshEpg() {
+        scope.launch {
+            val url = store.state.value.epgUrl.trim()
+            if (url.isBlank()) {
+                setStatus("Configura la URL de la guia EPG desde el celular", sticky = true)
+                return@launch
+            }
+            loadRemoteEpg(url, forceDownload = true)
+        }
+    }
+
+    /** Texto de la fila "Guia EPG" de Ajustes. */
+    fun epgLabel(): String {
+        if (epgRefreshing.value) return "Actualizando…"
+        if (epgUrl.value.isBlank()) return "Sin URL (embebida)"
+        val programs = epg.value.programs.size
+        return if (epgSource.value == "remoto") {
+            "Remota · ${programs} programas"
+        } else {
+            "Remota configurada"
         }
     }
 
@@ -1070,6 +1220,7 @@ class TvController(
             Setting.PAIRING -> openPairing()
             Setting.ZAP -> toggleZapMode()
             Setting.VIDEO -> cycleVideoFit()
+            Setting.EPG -> refreshEpg()
         }
     }
 
@@ -1525,7 +1676,11 @@ class TvController(
                         )
                     }
                 )
-            }
+            },
+            epgUrl = store.state.value.epgUrl,
+            epgSource = epgSource.value,
+            epgUpdatedAt = epgUpdatedAt.value,
+            epgRefreshing = epgRefreshing.value
         )
     }
 

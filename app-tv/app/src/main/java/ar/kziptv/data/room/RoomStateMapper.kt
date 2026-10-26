@@ -35,6 +35,7 @@ internal object RoomStateMapper {
             zapFavoritesOnly = state.zapFavoritesOnly,
             lastChannelId = state.lastChannelId,
             lastGroupId = state.lastGroupId,
+            epgUrl = state.epgUrl,
         )
 
     fun qualityPreferences(state: PersistedState): List<QualityPreferenceEntity> =
@@ -87,6 +88,7 @@ internal object RoomStateMapper {
             lastChannelId = settings?.lastChannelId.orEmpty(),
             lastGroupId = settings?.lastGroupId.orEmpty(),
             zapFavoritesOnly = settings?.zapFavoritesOnly ?: false,
+            epgUrl = settings?.epgUrl.orEmpty(),
             qualityPreference = qualityPreferences.associate { it.groupId to it.variantId },
             variantStatus = variantStatus,
             measuredResolution = measuredResolution,

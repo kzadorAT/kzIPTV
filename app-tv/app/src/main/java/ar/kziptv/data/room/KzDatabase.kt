@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EpgCacheMetaEntity::class,
         WatchHistoryEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class KzDatabase : RoomDatabase() {
@@ -93,11 +93,20 @@ abstract class KzDatabase : RoomDatabase() {
             }
         }
 
+        /** La URL de la guia EPG remota se suma a los ajustes (esquema 4). */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `app_settings` ADD COLUMN `epgUrl` TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
         fun create(context: Context): KzDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 KzDatabase::class.java,
                 "kz.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 }

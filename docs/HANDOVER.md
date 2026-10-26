@@ -335,8 +335,11 @@ Como trabajar alrededor:
    recibe `state = gridState` y el scroll desplaza lo justo (calcula el paso de fila con los items
    visibles). Verificado en la TV: el foco ya no se sale de la pantalla. Commit `5de8a5f`.
 3. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
-4. **EPG fresco**: la app baja `epg/ar.xml.gz` del repo (raw.githubusercontent) + cache en disco,
-   parseo incremental (hoy parsea 2 MB en cada arranque: ~7 s de CPU).
+4. **EPG fresco** — **en curso (26/10/2026, este chat)**: la app baja la guia de una URL
+   configurable (la que publica el pipeline semanal), la cachea en disco (TTL 24 h) y en Room
+   (fingerprint SHA-256), y actualiza la guia en caliente sin reinstalar la app. La URL se cambia
+   desde el celular (companion) o por API; en Ajustes aparece la fila "Guia EPG".
+   Diseno completo en `docs/PLAN.md` §16.
 5. **Multi-lista** y selector de lista en la TV.
 6. **Ver despues** / cola de reproduccion.
 7. **Release firmado + R8 + baselineProfile** (el arranque en debug es 5,75 s; en release baja).

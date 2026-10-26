@@ -38,6 +38,8 @@ data class AppSettingsEntity(
     val zapFavoritesOnly: Boolean,
     val lastChannelId: String,
     val lastGroupId: String,
+    /** URL de la guia EPG remota (vacio = se usa la guia embebida). */
+    val epgUrl: String = "",
 )
 
 /** Variante preferida por canal logico. */

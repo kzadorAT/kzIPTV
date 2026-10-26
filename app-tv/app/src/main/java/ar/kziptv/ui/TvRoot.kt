@@ -1169,6 +1169,8 @@ fun SettingsScreen(controller: TvController) {
     val fitMode by controller.videoFitMode.collectAsState()
     val catalog by controller.catalog.collectAsState()
     val epg by controller.epg.collectAsState()
+    val epgRefreshing by controller.epgRefreshing.collectAsState()
+    val epgSource by controller.epgSource.collectAsState()
 
     val serverLabel = when {
         busy -> "Encendiendo\u2026"
@@ -1179,20 +1181,23 @@ fun SettingsScreen(controller: TvController) {
         "Servidor web" to serverLabel,
         "Emparejar el celular" to "QR",
         "Zap" to (if (zapOnly) "Solo favoritos" else "Todos los canales"),
-        "Video" to controller.videoFitLabel(fitMode)
+        "Video" to controller.videoFitLabel(fitMode),
+        "Guia EPG" to controller.epgLabel()
     )
 
+    // Con 5 filas (servidor, emparejamiento, zap, video, guia EPG) el padding
+    // chico es lo que hace que todo entre en la pantalla de la TV (540 dp de alto).
     Column(
-        Modifier.fillMaxSize().background(KzBg).padding(52.dp)
+        Modifier.fillMaxSize().background(KzBg).padding(32.dp)
     ) {
-        Text(text = "Ajustes", color = Color.White, fontSize = 36.sp)
-        Spacer(Modifier.height(8.dp))
+        Text(text = "Ajustes", color = Color.White, fontSize = 32.sp)
+        Spacer(Modifier.height(6.dp))
         Text(
             text = "OK para cambiar \u00b7 BACK para volver",
             color = Color(0xFF56616F),
-            fontSize = 15.sp
+            fontSize = 14.sp
         )
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(16.dp))
 
         rows.forEachIndexed { index, row ->
             val selected = index == focus
@@ -1201,24 +1206,25 @@ fun SettingsScreen(controller: TvController) {
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(if (selected) Color(0xFF1B3A5C) else KzCard)
-                    .padding(horizontal = 24.dp, vertical = 18.dp),
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = row.first,
                     color = if (selected) KzBlue else Color.White,
-                    fontSize = 21.sp,
+                    fontSize = 19.sp,
                     modifier = Modifier.weight(1f)
                 )
-                Text(text = row.second, color = Color(0xFF9FB0C3), fontSize = 19.sp)
+                Text(text = row.second, color = Color(0xFF9FB0C3), fontSize = 17.sp)
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
         }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
         Text(
             text = "Canales: ${catalog.groups.size} \u00b7 Programas EPG: ${epg.programs.size}" +
-                "\nServidor: " + (if (serverUrl.isNotBlank()) serverUrl else "apagado"),
+                "\nServidor: " + (if (serverUrl.isNotBlank()) serverUrl else "apagado") +
+                "\nGuia: " + epgSource + (if (epgRefreshing) " (actualizando)" else ""),
             color = Color(0xFF56616F),
             fontSize = 14.sp
         )
