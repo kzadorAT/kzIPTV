@@ -182,6 +182,7 @@ Lo que sí queda para P2 es el "surf" con refresco periódico (re-capturar el ti
 - **Pipeline**: GitHub Action semanal (gratis, cron) que corre las utilidades del repo iptv-org/epg para los canales AR y commitea "epg/ar.xml.gz" al repo; la app lo descarga de raw.githubusercontent al iniciar y cada 24 h, con parser incremental y purge a 7 días. **P0: verificar match de tvg-id ("A24.ar@SD") ↔ ids del XMLTV; fallback por nombre normalizado.**
 - **Banner**: ahora/siguiente en cada zap.
 - **Grilla** (P2): filas = canales de la lista activa, timeline horizontal, línea de "ahora", OK sintoniza, panel de detalle con descripción, salto de fecha/hora.
+- **Guía lineal** (P2, pedido del 26/10/2026): tira horizontal arriba del reproductor con los canales siguientes (nombre + "ahora") y el canal actual resaltado, sin tapar el video; la misma tira arriba de la grilla. Es la versión liviana de la grilla EPG: no necesita timeline ni scroll.
 
 ### Ocultos / parental
 - Ocultar canal o categoría con PIN de 4 dígitos; desaparecen de grillas y del zap.
@@ -361,3 +362,27 @@ Reglas que sí se respetan desde ya (invariantes, no micro-optimizaciones):
 | Pre-calentar DNS/TLS del canal siguiente | −0,5-1,5 s de latencia de zap | P1 |
 | Reciclado de imágenes en la grilla (Coil ya lo hace) + `LazyGrid` con keys estables | evita jank al scrollear | P1 |
 | Presupuesto de decoders para mosaico/PiP | define el techo de calidad | P2 |
+
+---
+
+## 15 · Observaciones del usuario (26/10/2026) — triaje
+
+Lo que se reporta desde la TV, con el estado real de cada punto. Lo que ya estaba contemplado en
+el plan no se vuelve a discutir; lo nuevo o lo que está roto queda anotado con su próximo paso.
+
+| # | Lo que se reporta | Estado | Dónde está contemplado | Próximo paso |
+|---|---|---|---|---|
+| 1 | En la grilla, al seguir bajando la pantalla queda estática | **Bug** | nadie: al `LazyVerticalGrid` de `TvRoot.kt` nunca se le pasa `state = gridState`, así que el `scrollToItem` del `LaunchedEffect` escribe en un estado que no es el de la grilla | fix de 1 línea + prueba en la TV (**lo primero**) |
+| 2 | Guía lineal tipo "ir pasando canales" con el canal actual visible arriba, también en modo grilla | **Nuevo** | la grilla EPG completa ya estaba como P2; la versión lineal no | diseñar el ticker horizontal (P2); se puede construir con el EPG bundled actual (2.474 programas) |
+| 3 | Cambiar audio, activar subtítulos, cambiar resolución | **Parcial** | §8 ("Pistas: audio/subtítulos del stream cuando existen"); la resolución ya existe (selector de calidad + `variant_states.measuredResolution`) | **medido el 26/10**: de 24 streams muestreados, **0** declaran `EXT-X-MEDIA:TYPE=AUDIO` y **0** subtítulos; el M3U solo trae `tvg-id`, `tvg-logo` y `group-title`. Con esta lista el selector de audio/subtítulos no tiene nada que ofrecer → implementarlo solo cuando el usuario cargue una playlist multi-audio |
+| 4 | Menú de configuraciones generales | **Contemplado** | §3 y §8 (server apagable, aspecto, pistas, PIN) | pantalla AJUSTES: hoy MENU abre SETUP (QR) y no hay más pantallas |
+| 5 | El server web debería estar apagado salvo que se pida | **Contemplado** | §3 ("server apagable desde Ajustes", "QR regenerable") | toggle en Ajustes + acceso rápido con QR; hoy el server arranca siempre en `MainActivity` |
+| 6 | El cartel "201 canales · 2474 programas EPG" queda pegado en pantalla | **No es debug** | es el `status` persistente del reproductor (`TvRoot.kt`), que mezcla avisos útiles con la línea de arranque | conteos solo al log (`KzStartup` ya los tiene) y los avisos como cartel transitorio (~3,5 s) con recuadro redondeado |
+
+**Reglas para esta lista**:
+
+1. Cada punto nuevo entra con (a) qué se ve en la TV, (b) qué ya está contemplado, (c) el próximo
+   paso y (d) la prioridad.
+2. Nada se implementa sin quedar anotado antes acá y en `docs/HANDOVER.md` §9.
+3. Un bug real sube al principio de la lista de P1 del handover, aunque sea de una línea.
+4. Lo que ya estaba en el plan se ignora al reportarlo: se confirma y sigue.

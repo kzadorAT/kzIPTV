@@ -180,6 +180,17 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 | Historial | ✅ `watch_history` guarda las reproducciones (acotado a 500 filas) |
 | Suite JVM | ✅ 76 tests verdes (`testDebugUnitTest`) |
 
+### 5.2 Observaciones del usuario (26/10/2026)
+
+| Lo que se reporta | Estado | Próximo paso |
+|---|---|---|
+| En la grilla, al seguir bajando la pantalla queda estática | **bug**: el `LazyVerticalGrid` no recibe `state = gridState` | fix de 1 línea + prueba en la TV |
+| Guía lineal de EPG con el canal actual visible (también en grilla) | **nuevo** (la grilla EPG completa ya estaba en P2) | diseñar el ticker horizontal (P2) |
+| Cambiar audio / subtítulos / resolución | **parcial**: la resolución ya existe (selector de calidad) y los streams actuales no traen pistas alternas (0 de 24 medidos) | implementarlo solo cuando el usuario cargue una playlist multi-audio |
+| Menú de configuraciones generales | **contemplado** en el plan (§3, §8) | pantalla AJUSTES |
+| Server web siempre prendido | **contemplado** en el plan (§3) | toggle en Ajustes + acceso con QR |
+| Cartel "201 canales · 2474 programas EPG" pegado en pantalla | **no es debug**: es el `status` persistente | conteos solo al log + cartel transitorio con recuadro |
+
 **Qué probar en 5 minutos**
 
 1. La TV arranca en el reproductor (la playlist viene embebida).
@@ -204,9 +215,11 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
    falta la descarga en background con parseo incremental.
 4. **Room + multi-lista**: playlists propias, guardado de EPG, historial. → **Room hecho en P1**
    (esquema v3, import del JSON legado, cache EPG e historial); falta el selector de lista en la TV.
-5. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
-6. **EPG de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
-7. Release firmado + distribución (sideload por QR / Play private track).
+5. **UX y ajustes** (observaciones del 26/10/2026, §5.2): scroll de la grilla, menú de Ajustes,
+   server apagable y cartel de estado transitorio.
+6. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
+7. **EPG de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
+8. Release firmado + distribución (sideload por QR / Play private track).
 
 ---
 

@@ -320,19 +320,35 @@ Como trabajar alrededor:
 1. ~~**Room** en vez del store JSON (multi-lista, historial, EPG cacheado).~~ **Hecho (26/10/2026):**
    esquema v3 con migraciones 1→2→3, import del JSON legado con backup, cache EPG (2.474
    programas) e historial de reproducción. Ver seccion 2.1. Falta solo el selector de lista en la UI.
-2. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
-3. **EPG fresco**: la app baja `epg/ar.xml.gz` del repo (raw.githubusercontent) + cache en disco,
+2. **Arreglar el scroll de la grilla** (bug reportado el 26/10/2026): al seguir bajando, el foco
+   sale de la pantalla y la grilla no acompaña. Causa: al `LazyVerticalGrid` no se le pasa
+   `state = gridState`. Es un fix de una linea + prueba en la TV.
+3. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
+4. **EPG fresco**: la app baja `epg/ar.xml.gz` del repo (raw.githubusercontent) + cache en disco,
    parseo incremental (hoy parsea 2 MB en cada arranque: ~7 s de CPU).
-4. **Multi-lista** y selector de lista en la TV.
-5. **Ver despues** / cola de reproduccion.
-6. **Release firmado + R8 + baselineProfile** (el arranque en debug es 5,75 s; en release baja).
-7. Pre-calentar DNS/TLS del canal siguiente (hoy el zapping tarda 0,8-2,5 s).
+5. **Multi-lista** y selector de lista en la TV.
+6. **Ver despues** / cola de reproduccion.
+7. **Release firmado + R8 + baselineProfile** (el arranque en debug es 5,75 s; en release baja).
+8. Pre-calentar DNS/TLS del canal siguiente (hoy el zapping tarda 0,8-2,5 s).
+
+### Observaciones del usuario (26/10/2026) — triaje
+
+| Qué se reporta | Estado | Dónde | Qué hacer |
+|---|---|---|---|
+| Grid: al seguir bajando la pantalla queda estática | **Bug** | `TvRoot.kt`: al `LazyVerticalGrid` no se le pasa `state = gridState` | fix de 1 línea + prueba en TV (item 2 de P1) |
+| Guía lineal de EPG (canal actual visible arriba, también en grilla) | **Nuevo** | la grilla EPG completa ya estaba en P2; la versión lineal no | diseñar el ticker horizontal (P2); se puede construir con el EPG bundled actual |
+| Cambiar audio / subtítulos / resolución | **Parcial** | PLAN §8; la resolución ya existe (selector de calidad) | medido: 0 pistas de audio y 0 subtítulos en los streams actuales → solo cuando haya playlist multi-audio |
+| Menú de configuraciones generales | **Contemplado** | PLAN §3 y §8 | pantalla AJUSTES (hoy MENU abre SETUP/QR) |
+| El server web debería estar apagado salvo que se pida | **Contemplado** | PLAN §3 ("server apagable desde Ajustes") | toggle en Ajustes + QR; hoy arranca siempre |
+| El cartel "201 canales · 2474 programas EPG" queda pegado | **No es debug** | es el `status` persistente del reproductor (`TvRoot.kt`) | conteos solo al log; avisos como cartel transitorio con recuadro (P1, barato) |
+
+Detalle y reglas de esta lista en `docs/PLAN.md` §15.
 
 ### P2
 
-8. **Grilla completa de EPG** (filas = canales, timeline, linea de ahora).
-9. Celular como **control remoto completo** (hoy parcial).
-10. Parental / ocultos con PIN, perfiles, Favoritos compartidos entre TVs.
+9. **Grilla completa de EPG** (filas = canales, timeline, linea de ahora).
+10. Celular como **control remoto completo** (hoy parcial).
+11. Parental / ocultos con PIN, perfiles, Favoritos compartidos entre TVs.
 
 ### Backlog tecnico
 
