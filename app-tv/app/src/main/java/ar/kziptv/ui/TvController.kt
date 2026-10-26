@@ -23,6 +23,7 @@ import ar.kziptv.core.nav.RetryPolicy
 import ar.kziptv.input.RemoteKeys
 import ar.kziptv.playback.ThumbnailManager
 import ar.kziptv.playback.PlayerManager
+import ar.kziptv.server.EmbeddedServer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,11 +33,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
 
-enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC }
+enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS }
+
+/** Filas de la pantalla de ajustes (el orden es el de navegacion). */
+enum class Setting { SERVER, PAIRING, ZAP, VIDEO }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -135,6 +140,18 @@ class TvController(
     private var statusJob: Job? = null
     val serverUrl = MutableStateFlow("")
     val pairingCode = MutableStateFlow("")
+
+    /** El server web no arranca solo: se enciende desde AJUSTES. */
+    val serverRunning = MutableStateFlow(false)
+
+    /** true mientras el server esta arrancando (Netty tarda un instante). */
+    val serverBusy = MutableStateFlow(false)
+
+    /** Foco de la pantalla de ajustes. */
+    val settingsFocus = MutableStateFlow(0)
+
+    /** Encuadre del video: 0 = ajustar, 1 = rellenar, 2 = ampliar. */
+    val videoFitMode = MutableStateFlow(0)
     val zapFavoritesOnly = MutableStateFlow(false)
     val focusedGroupId = MutableStateFlow<String?>(null)
     val focusedVariantId = MutableStateFlow<String?>(null)
@@ -212,6 +229,15 @@ class TvController(
 
     /** A donde vuelve BACK cuando el canal se eligio desde una lista. */
     private var playerBackScreen: Screen = Screen.GRID
+
+    /** Pantalla de la que se abrio AJUSTES (BACK vuelve ahi). */
+    private var settingsBackScreen: Screen = Screen.PLAYER
+
+    /** Pantalla de la que se abrio el emparejamiento (BACK vuelve ahi). */
+    private var setupBackScreen: Screen = Screen.GRID
+
+    /** Server web embebido: lo enciende y apaga el usuario. */
+    private var webServer: EmbeddedServer? = null
 
     /** Aviso de "presiona BACK otra vez para salir". */
     val exitHintVisible = MutableStateFlow(false)
@@ -666,7 +692,8 @@ class TvController(
             Screen.SEARCH -> { screen.value = Screen.GRID; true }
             Screen.MOSAIC -> { closeMosaic(); true }
             Screen.QUALITY -> { screen.value = Screen.PLAYER; true }
-            Screen.SETUP -> { screen.value = Screen.GRID; true }
+            Screen.SETUP -> { screen.value = setupBackScreen; true }
+            Screen.SETTINGS -> { screen.value = settingsBackScreen; true }
             // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
             // BACK devuelve a esa lista. Si se estaba zapeando, vuelve al video.
             Screen.PLAYER -> { screen.value = playerBackScreen; true }
@@ -963,9 +990,105 @@ class TvController(
         mosaicCaptureJob?.cancel()
         exitHintJob?.cancel()
         mosaic.release()
+        stopWebServer(announce = false)
+    }
+
+    // ---------------------------------------------------------------------
+    // Server web: apagado por defecto, se enciende desde AJUSTES
+    // ---------------------------------------------------------------------
+
+    /**
+     * Enciende el server web. No arranca solo: el usuario lo pide desde
+     * AJUSTES (o con OK en la pantalla de emparejamiento).
+     */
+    fun startWebServer() {
+        if (serverRunning.value || serverBusy.value) return
+        serverBusy.value = true
+        Thread({
+            try {
+                // Netty carga muchas clases al arrancar: si eso corre en el main
+                // thread, la TV tira ANR por timeout de input.
+                runBlocking { store.initialize() }
+                val srv = EmbeddedServer(context, this, store)
+                val port = srv.start()
+                if (port > 0) {
+                    webServer = srv
+                    serverRunning.value = true
+                    setStatus("Servidor web encendido en ${serverUrl.value}")
+                } else {
+                    setStatus("No se pudo prender el servidor web", sticky = true)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("KzServer", "no se pudo prender el server", e)
+                setStatus("No se pudo prender el servidor web", sticky = true)
+            } finally {
+                serverBusy.value = false
+            }
+        }, "kziptv-server").apply { isDaemon = true }.start()
+    }
+
+    /** Apaga el server web (deja de estar accesible desde el celular). */
+    fun stopWebServer(announce: Boolean = true) {
+        webServer?.stop()
+        webServer = null
+        serverRunning.value = false
+        setServerUrl("")
+        if (announce) setStatus("Servidor web apagado")
+    }
+
+    /** Prende/apaga el server web. */
+    fun toggleWebServer() {
+        if (serverRunning.value) stopWebServer() else startWebServer()
+    }
+
+    // ---------------------------------------------------------------------
+    // Pantalla de ajustes
+    // ---------------------------------------------------------------------
+
+    /** Abre la pantalla de ajustes (BACK vuelve a la pantalla de la que se salio). */
+    fun openSettings() {
+        settingsBackScreen = screen.value
+        settingsFocus.value = 0
+        screen.value = Screen.SETTINGS
+    }
+
+    /** Mueve el foco en la pantalla de ajustes. */
+    private fun moveSettingsFocus(code: Int) {
+        val count = Setting.entries.size
+        val index = settingsFocus.value.coerceIn(0, count - 1)
+        when (code) {
+            RemoteKeys.DPAD_DOWN -> settingsFocus.value = (index + 1) % count
+            RemoteKeys.DPAD_UP -> settingsFocus.value = (index - 1 + count) % count
+        }
+    }
+
+    /** Activa la fila enfocada de la pantalla de ajustes. */
+    private fun activateSettingsRow() {
+        val row = Setting.entries[settingsFocus.value.coerceIn(0, Setting.entries.size - 1)]
+        when (row) {
+            Setting.SERVER -> toggleWebServer()
+            Setting.PAIRING -> openPairing()
+            Setting.ZAP -> toggleZapMode()
+            Setting.VIDEO -> cycleVideoFit()
+        }
+    }
+
+    /** Cambia el encuadre del video: ajustar -> rellenar -> ampliar. */
+    fun cycleVideoFit() {
+        videoFitMode.value = (videoFitMode.value + 1) % 3
+        setStatus("Video: " + videoFitLabel(videoFitMode.value))
+    }
+
+    /** Nombre del modo de encuadre del video. */
+    fun videoFitLabel(mode: Int = videoFitMode.value): String = when (mode) {
+        0 -> "Ajustar"
+        1 -> "Rellenar"
+        else -> "Ampliar"
     }
 
     fun openPairing() {
+        // Si el emparejamiento se abrio desde AJUSTES, BACK vuelve a AJUSTES.
+        setupBackScreen = screen.value
         screen.value = Screen.SETUP
     }
 
@@ -1055,7 +1178,11 @@ class TvController(
                     play(group)
                 }
             }
-            Screen.SETUP -> Unit
+            Screen.SETUP -> {
+                // Con el server apagado el QR no sirve: OK lo enciende.
+                if (!serverRunning.value) startWebServer()
+            }
+            Screen.SETTINGS -> activateSettingsRow()
         }
     }
 
@@ -1251,6 +1378,7 @@ class TvController(
             Screen.QUALITY -> moveQualityFocus(code)
             Screen.SEARCH -> moveSearchFocus(code)
             Screen.MOSAIC -> moveMosaicFocus(code)
+            Screen.SETTINGS -> moveSettingsFocus(code)
             else -> Unit
         }
     }

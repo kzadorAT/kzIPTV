@@ -101,6 +101,7 @@ fun TvRoot(controller: TvController) {
         Screen.QUALITY -> QualityScreen(controller)
         Screen.SEARCH -> SearchScreen(controller)
         Screen.MOSAIC -> MosaicScreen(controller)
+        Screen.SETTINGS -> SettingsScreen(controller)
     }
 }
 
@@ -128,16 +129,18 @@ fun PlayerScreen(controller: TvController) {
     val statusVisible by controller.statusVisible.collectAsState()
     val playbackState by controller.playbackState.collectAsState()
     val playbackError by controller.playbackError.collectAsState()
+    val fitMode by controller.videoFitMode.collectAsState()
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     useController = false
-                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    resizeMode = fitMode.resizeMode()
                     this.player = controller.player.exo
                 }
             },
+            update = { view -> view.resizeMode = fitMode.resizeMode() },
             modifier = Modifier.fillMaxSize()
         )
 
@@ -400,7 +403,7 @@ fun GridScreen(controller: TvController) {
             }
 
             Text(
-                text = "OK reproducir \u00b7 OK largo calidad \u00b7 AMARILLO favorito \u00b7 ROJO zap favoritos \u00b7 MENU QR",
+                text = "OK reproducir \u00b7 OK largo calidad \u00b7 AMARILLO favorito \u00b7 ROJO zap favoritos \u00b7 AZUL ajustes",
                 color = Color(0xFF56616F),
                 fontSize = 13.sp,
                 modifier = Modifier.padding(top = 10.dp)
@@ -844,7 +847,12 @@ fun SetupScreen(controller: TvController) {
     val url by controller.serverUrl.collectAsState()
     val code by controller.pairingCode.collectAsState()
     val status by controller.status.collectAsState()
-    val bitmap = remember(url, code) { qrBitmap("${url}/pair#${code}", 720) }
+    val running by controller.serverRunning.collectAsState()
+    val busy by controller.serverBusy.collectAsState()
+    // Sin server no hay QR que escanear: la pantalla lo dice y OK lo enciende.
+    val bitmap = remember(url, code, running) {
+        if (running) qrBitmap("${url}/pair#${code}", 720) else null
+    }
 
     // En dos columnas: en vertical el contenido no entra en 1080p y el codigo quedaba cortado.
     Row(
@@ -853,18 +861,28 @@ fun SetupScreen(controller: TvController) {
         horizontalArrangement = Arrangement.spacedBy(48.dp, Alignment.CenterHorizontally)
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (bitmap != null) {
+            if (running && bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
                     contentDescription = "QR de emparejamiento",
                     modifier = Modifier.size(320.dp)
                 )
+                Spacer(Modifier.height(18.dp))
+                Text(text = "Codigo: ${code}", color = KzBlue, fontSize = 30.sp)
+                Text(text = url, color = Color(0xFF9FB0C3), fontSize = 16.sp)
             } else {
-                Text(text = "QR no disponible", color = Color.Gray, fontSize = 18.sp)
+                Text(
+                    text = if (busy) "Encendiendo el servidor web\u2026" else "Servidor web apagado",
+                    color = Color.White,
+                    fontSize = 28.sp
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = if (busy) "Esperando\u2026" else "Presiona OK para encenderlo",
+                    color = Color(0xFF7C8899),
+                    fontSize = 18.sp
+                )
             }
-            Spacer(Modifier.height(18.dp))
-            Text(text = "Codigo: ${code}", color = KzBlue, fontSize = 30.sp)
-            Text(text = url, color = Color(0xFF9FB0C3), fontSize = 16.sp)
         }
         Column(modifier = Modifier.width(480.dp)) {
             Text(text = "Configura kzIPTV desde tu celular", color = Color.White, fontSize = 32.sp)
@@ -1134,4 +1152,82 @@ private fun MosaicTile(
             }
         }
     }
+}
+
+/**
+ * Ajustes: server web (encendido/apagado), emparejamiento con QR, modo de
+ * zap y encuadre del video. El foco lo maneja el controller (mismas reglas
+ * que en la grilla: el control remoto y el companion se comportan igual).
+ */
+@Composable
+fun SettingsScreen(controller: TvController) {
+    val focus by controller.settingsFocus.collectAsState()
+    val running by controller.serverRunning.collectAsState()
+    val busy by controller.serverBusy.collectAsState()
+    val serverUrl by controller.serverUrl.collectAsState()
+    val zapOnly by controller.zapFavoritesOnly.collectAsState()
+    val fitMode by controller.videoFitMode.collectAsState()
+    val catalog by controller.catalog.collectAsState()
+    val epg by controller.epg.collectAsState()
+
+    val serverLabel = when {
+        busy -> "Encendiendo\u2026"
+        running -> "Encendido"
+        else -> "Apagado"
+    }
+    val rows = listOf(
+        "Servidor web" to serverLabel,
+        "Emparejar el celular" to "QR",
+        "Zap" to (if (zapOnly) "Solo favoritos" else "Todos los canales"),
+        "Video" to controller.videoFitLabel(fitMode)
+    )
+
+    Column(
+        Modifier.fillMaxSize().background(KzBg).padding(52.dp)
+    ) {
+        Text(text = "Ajustes", color = Color.White, fontSize = 36.sp)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "OK para cambiar \u00b7 BACK para volver",
+            color = Color(0xFF56616F),
+            fontSize = 15.sp
+        )
+        Spacer(Modifier.height(28.dp))
+
+        rows.forEachIndexed { index, row ->
+            val selected = index == focus
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (selected) Color(0xFF1B3A5C) else KzCard)
+                    .padding(horizontal = 24.dp, vertical = 18.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = row.first,
+                    color = if (selected) KzBlue else Color.White,
+                    fontSize = 21.sp,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(text = row.second, color = Color(0xFF9FB0C3), fontSize = 19.sp)
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = "Canales: ${catalog.groups.size} \u00b7 Programas EPG: ${epg.programs.size}" +
+                "\nServidor: " + (if (serverUrl.isNotBlank()) serverUrl else "apagado"),
+            color = Color(0xFF56616F),
+            fontSize = 14.sp
+        )
+    }
+}
+
+/** Traduce el modo de encuadre de Ajustes al constante de Media3. */
+private fun Int.resizeMode(): Int = when (this) {
+    1 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    2 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
 }

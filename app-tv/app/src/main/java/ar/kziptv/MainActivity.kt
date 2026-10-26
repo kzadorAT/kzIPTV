@@ -8,7 +8,6 @@ import ar.kziptv.data.KzStore
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.input.RemoteKeys
 import ar.kziptv.playback.PlayerManager
-import ar.kziptv.server.EmbeddedServer
 import ar.kziptv.ui.KzTheme
 import ar.kziptv.ui.Screen
 import ar.kziptv.ui.TvController
@@ -20,7 +19,6 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var controller: TvController
     private lateinit var store: KzStore
-    private var server: EmbeddedServer? = null
     private var okDownAt = 0L
 
     /** Momento del ultimo BACK en la pantalla raiz (para el BACK doble). */
@@ -64,15 +62,8 @@ class MainActivity : ComponentActivity() {
         android.util.Log.i("KzStartup", "player+controller: " + (android.os.SystemClock.elapsedRealtime() - t0) + " ms")
         controller.bootstrap()
 
-        // Netty carga muchas clases al arrancar: si eso corre en el main thread, la TV
-        // tira ANR por el timeout de input. Se levanta en un hilo propio.
-        val srv = EmbeddedServer(this, controller, store)
-        server = srv
-        Thread({
-            // El server no acepta requests hasta que Room termino de migrar/cargar el estado.
-            runBlocking { store.initialize() }
-            srv.start()
-        }, "kziptv-server").apply { isDaemon = true }.start()
+        // El server web NO arranca solo: queda apagado hasta que el usuario lo pide
+        // desde AJUSTES (tecla AZUL) o con OK en la pantalla de emparejamiento.
 
         setContent {
             KzTheme {
@@ -97,7 +88,8 @@ class MainActivity : ComponentActivity() {
             if (!imeOpen &&
                 (
                     screen == Screen.GRID || screen == Screen.QUALITY ||
-                        screen == Screen.SEARCH || screen == Screen.MOSAIC
+                        screen == Screen.SEARCH || screen == Screen.MOSAIC ||
+                        screen == Screen.SETTINGS
                     )
             ) {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.onDpad(event.keyCode)
@@ -131,7 +123,8 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             RemoteKeys.PROG_BLUE -> {
-                if (event.action == KeyEvent.ACTION_DOWN) controller.openPairing()
+                // AZUL abre AJUSTES (server web, QR, zap, video).
+                if (event.action == KeyEvent.ACTION_DOWN) controller.openSettings()
                 return true
             }
             in RemoteKeys.DIGIT_0..RemoteKeys.DIGIT_9,
@@ -194,7 +187,6 @@ class MainActivity : ComponentActivity() {
         closing = true
         android.util.Log.i("KzIPTV", "salida por BACK doble")
         controller.hideExitHint()
-        server?.stop()
         controller.release()
         controller.player.release()
         runBlocking(Dispatchers.IO) { store.close() }
@@ -210,7 +202,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         current = null
         if (!closing) {
-            server?.stop()
             controller.release()
             controller.player.release()
             runBlocking(Dispatchers.IO) { store.close() }
