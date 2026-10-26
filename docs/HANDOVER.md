@@ -35,7 +35,7 @@
 ## 2 - Estado actual: que YA FUNCIONA (verificado en la TV real)
 
 TV de pruebas: **TCL Smart TV Pro**, Android 11 (API 30), 1920x1080 @ 320 dpi (960x540 dp),
-IP `192.168.1.20:5555` (ADB por WiFi).
+IP `192.168.1.18:5555` (ADB por WiFi; cambio desde `192.168.1.20` el 26/10/2026).
 
 - Zapping con CH+ / CH- (keycodes 166/167) y con los botones del control.
 - **Canales logicos agrupados**: 206 feeds -> **201 senales** (`ChannelGrouper`: tvg-id base
@@ -49,7 +49,7 @@ IP `192.168.1.20:5555` (ADB por WiFi).
 - **Setup por QR** + **companion web** completo (emparejar, mandar playlist, control remoto, lista).
 - **Mosaico de 16 tiles** con frame congelado por canal, sin senal para los caidos, y **surf**.
 - **Salvapantallas** (`FLAG_KEEP_SCREEN_ON`) durante reproduccion y en el mosaico.
-- **BACK doble en la grilla = salir de la app** (ver seccion 5; implementado, falta el cierre final en TV).
+- **BACK doble en la grilla = salir de la app** (ver seccion 5; verificado en la TV real).
 - **71 tests unitarios** verdes (`testDebugUnitTest`).
 
 ### Bugs ya resueltos (no reintroducirlos)
@@ -144,11 +144,11 @@ kzIPTV/
 
 ---
 
-## 5 - Estado del BACK doble para salir (trabajo en curso, SIN commitear al corte)
+## 5 - BACK doble para salir (implementado y verificado en la TV)
 
 **Pedido**: cerrar la aplicacion presionando BACK 2 veces, cuando estamos en el inicio de la app.
 
-**Implementado** (compila, 71 tests verdes, build OK):
+**Implementado y comiteado** (71 tests verdes, build OK):
 
 - `MainActivity.kt`
   - `lastBackAt` + `closing` + `EXIT_WINDOW_MS = 3_000L`.
@@ -156,7 +156,8 @@ kzIPTV/
     lo cierra; si `controller.back()` devuelve `false` (estamos en la **raiz**) -> aplica la
     ventana de 3 s: 1er BACK muestra el aviso, 2do BACK dentro de la ventana **cierra la app**.
   - `closeApp()`: log `salida por BACK doble`, `server.stop()`, `controller.release()`,
-    `player.release()`, `finishAndRemoveTask()`.
+    `player.release()`, `finishAndRemoveTask()` y `Process.killProcess(myPid())`.
+    El ultimo paso evita que Android deje el proceso cacheado (y ~100 MB de RAM) despues de salir.
   - `onDestroy()` solo libera recursos si `!closing` (no se suelta dos veces).
 - `TvController.kt`
   - `back()` ahora devuelve `Boolean`: `false` **solo en `Screen.GRID`** (la raiz).
@@ -170,24 +171,22 @@ kzIPTV/
 - `EmbeddedServer.kt`: el comando `{"type":"key","code":4}` del celular **ahora se reinyecta**
   como tecla real (`MainActivity.injectKey`) para que el celular pueda hacer el mismo BACK doble.
 
-**Pendiente de verificar en la TV** (la conexion ADB se corto justo ahi):
-1. App abierta en **PLAYER** (restaura el ultimo canal) -> BACK -> debe ir a la **GRILLA**,
-   BACK -> aparece la pastilla, BACK -> **la app se cierra de verdad** (vuelve al launcher,
-   `pidof ar.kziptv.debug` vacio, log `salida por BACK doble`).
-2. Que el aviso se vaya solo a los 3 s.
-3. Que no haya crash ni `dead thread` en el logcat.
+**Verificado en la TV real el 26/10/2026** (TCL Smart TV Pro, IP `192.168.1.18`):
+1. App abierta en **PLAYER** (restaura el ultimo canal) -> BACK -> **GRILLA**.
+2. En la grilla, BACK -> aparece la pastilla; BACK dentro de 3 s -> **la app se cierra de verdad**:
+   vuelve al launcher, `pidof ar.kziptv.debug` queda vacio y aparece el log `salida por BACK doble`.
+3. La pastilla se oculta sola despues de 3 s (comparado con el arbol de accesibilidad de la pantalla).
+4. Sin crash, sin `dead thread` y sin ANR de `ar.kziptv.debug` en el logcat.
+5. El **companion** tambien funciona: `POST /api/command {"type":"key","code":4}` dos veces
+   en la grilla cierra la app de la misma manera.
 
-**Punto de diseno a decidir en el proximo chat**: hoy desde el PLAYER hacen falta **3 BACK**
-(player->grilla, grilla->aviso, grilla->salir). Si se quiere 2 BACK y listo, la opcion es que
-el aviso de salida aparezca **tambien en el player** (o que el primer BACK en el player ya
-cuente como el primer BACK de la ventana).
+**Decision de diseno**: se mantiene el flujo actual. Desde PLAYER hacen falta **3 BACK**
+(player -> grilla, grilla -> aviso, grilla -> salir), pero **desde la pantalla de inicio**
+(el pedido original) son **2 BACK**. No se muestra el aviso de salida en el player para no
+cerrar la app por accidente mientras se mira television.
 
-**Rollback**: son 4 archivos tocados (`MainActivity`, `ui/TvController`, `ui/TvRoot`,
-`server/EmbeddedServer`). Si molesta:
-`git checkout -- app-tv/app/src/main/java/ar/kziptv/MainActivity.kt`
-`git checkout -- app-tv/app/src/main/java/ar/kziptv/ui/TvController.kt`
-`git checkout -- app-tv/app/src/main/java/ar/kziptv/ui/TvRoot.kt`
-`git checkout -- app-tv/app/src/main/java/ar/kziptv/server/EmbeddedServer.kt`
+**Commits**: `919b416` implemento el flujo completo; `989fe6a` agrega la terminacion real
+del proceso, que si no dejaba el proceso Android cacheado.
 
 ---
 
@@ -218,15 +217,15 @@ Copy-Item -Recurse -Force companion\dist\* app-tv\app\src\main\assets\companion\
 
 ```powershell
 $adb='C:\Users\fabri\AppData\Local\Android\Sdk\platform-tools\adb.exe'
-& $adb connect 192.168.1.20:5555
-& $adb -s 192.168.1.20:5555 install -r app-tv\app\build\outputs\apk\debug\app-debug.apk
-& $adb -s 192.168.1.20:5555 shell am force-stop ar.kziptv.debug
-& $adb -s 192.168.1.20:5555 shell am start -n ar.kziptv.debug/ar.kziptv.MainActivity
+& $adb connect 192.168.1.18:5555
+& $adb -s 192.168.1.18:5555 install -r app-tv\app\build\outputs\apk\debug\app-debug.apk
+& $adb -s 192.168.1.18:5555 shell am force-stop ar.kziptv.debug
+& $adb -s 192.168.1.18:5555 shell am start -n ar.kziptv.debug/ar.kziptv.MainActivity
 ```
 
 - **Paquete debug**: `ar.kziptv.debug` (el de release seria `ar.kziptv`).
 - Servidor embebido: puerto **8080** (si esta ocupado prueba 8081-8090).
-- URL en la TV: `http://192.168.1.20:8080/` (la IP de la PC es `192.168.1.17`).
+- URL en la TV: `http://192.168.1.18:8080/` (la IP de la PC es `192.168.1.17`).
 - Token de la sesion anterior (puede haber expirado): `7462d1df-c781-4964-bc3b-63693c2d56ff`.
 - Log: `& $adb -s ... logcat -s KzIPTV:D KzStartup:D`. ANRs: `& $adb -s ... shell dumpsys dropbox --print`.
 
@@ -248,20 +247,20 @@ $adb='C:\Users\fabri\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 
 **Cada `adb exec-out screencap` (o un `adb pull` grande) por ADB-WiFi deja la conexion
 colgada/muerta y la sesion de trabajo se frena.** Es lo que paso al final de la sesion
-anterior: la TV dejo de responder a `adb connect` (timeout 10060) y `ping 192.168.1.20` dio
+anterior: la TV dejo de responder a `adb connect` (timeout 10060) y `ping 192.168.1.18` dio
 false. Cuando la TV parece muerta, **no asumas que se rompio la app**: casi seguro es la
 conexion ADB por WiFi.
 
 Como trabajar alrededor:
 
-1. **Reconectar primero**: `adb kill-server; adb start-server; adb connect 192.168.1.20:5555`.
+1. **Reconectar primero**: `adb kill-server; adb start-server; adb connect 192.168.1.18:5555`.
    Si la TV cambio de IP, hay que sacar la IP nueva de la TV (Configuracion -> Red).
 2. **Capturar en pasos separados y chicos**:
    `adb shell screencap -p /sdcard/s.png` -> `adb pull /sdcard/s.png .tools/s.png` -> leer la imagen.
    (No volcar binarios por stdout en una sola llamada.)
 3. **Preferir `/api/state`** para verificar estado (JSON, sin captura):
-   `Invoke-RestMethod http://192.168.1.20:8080/api/state`.
-4. **Alternativa sin ADB**: la web del companion en `http://192.168.1.20:8080/` muestra el estado
+   `Invoke-RestMethod http://192.168.1.18:8080/api/state`.
+4. **Alternativa sin ADB**: la web del companion en `http://192.168.1.18:8080/` muestra el estado
    en vivo (Chrome DevTools puede abrirla).
 5. Si la TV quedo colgada por una captura pesada: `adb shell am force-stop ar.kziptv.debug` y
    relanzar; y **no** dejar `screencap` corriendo en loop.
@@ -324,6 +323,8 @@ Como trabajar alrededor:
 ## 11 - Historial de commits (para ubicarse)
 
 ```
+989fe6a fix(p1): terminar el proceso al salir con BACK doble
+919b416 feat(p1): BACK doble en la raiz cierra la app + handover para el proximo chat
 c4e736f feat(p1): surf en el mosaico - los tiles se refrescan solos
 d8c3ae6 feat(p1): comparar canales con mosaico de miniaturas
 14c3577 feat(p1): busqueda con IME del sistema, numero directo y fix del bucle de reintentos
@@ -334,5 +335,5 @@ b7ec21e fix(p0): ANR del parser EPG, hilo del player, auth por token y setup en 
 3cb14b2 feat(p0): app Android TV funcional con zapping, EPG y setup por QR
 ```
 
-Al corte, **sin commitear**: la salida por BACK doble (seccion 5) + el reindent de `GridScreen` +
-el BACK del celular reinyectado como tecla real.
+Al corte, **todo comiteado y verificado en la TV**: la salida por BACK doble, el BACK del
+celular reinyectado como tecla real y la terminacion real del proceso.

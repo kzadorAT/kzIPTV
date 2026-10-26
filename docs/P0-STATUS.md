@@ -548,7 +548,7 @@ app de verdad** (vuelve al launcher y saca la tarea de recientes).
 | `MainActivity.lastBackAt` + `EXIT_WINDOW_MS = 3_000L` | Ventana de tiempo entre los dos BACK |
 | `TvController.back(): Boolean` | Devuelve `false` **sólo en la raíz** (`Screen.GRID`) |
 | `TvController.exitHintVisible` + `showExitHint()` / `hideExitHint()` | El aviso, que se oculta solo a los 3 s |
-| `MainActivity.closeApp()` | Log `salida por BACK doble`, para el server, libera players y `finishAndRemoveTask()` |
+| `MainActivity.closeApp()` | Log `salida por BACK doble`, para el server, libera players, hace `finishAndRemoveTask()` y termina el proceso (`Process.killProcess`) |
 | `GridScreen` (Compose) | La pastilla "Presiona BACK otra vez para salir" abajo al centro |
 
 De paso se corrigió un bug de navegación: `playerBackScreen` pasó de `Screen.PLAYER` a
@@ -565,11 +565,13 @@ PLAYER (la app arranca aqui: retoma el ultimo canal)
    BACK  -> la app se cierra (vuelve al launcher)
 ```
 
-### Verificado / pendiente
+### Verificado en la TV real (26/10/2026)
 
-- ✅ El aviso aparece en la grilla (captura de pantalla en la TV).
-- ⏳ Falta confirmar en la TV el **cierre real** (que el proceso muera y que no queden tareas en
-  recientes) y que no haya crash en el logcat.
+- ✅ El aviso aparece en la grilla y se oculta solo a los 3 s.
+- ✅ El **cierre es real**: vuelve al launcher, `pidof ar.kziptv.debug` queda vacio y el log
+  `salida por BACK doble` aparece.
+- ✅ Sin crash, sin `dead thread` y sin ANR de la app en el logcat.
+- ✅ El BACK reinyectado desde el companion hace el mismo cierre con dos comandos.
 
 ---
 
