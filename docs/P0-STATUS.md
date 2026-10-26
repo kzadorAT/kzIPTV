@@ -16,7 +16,7 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Catálogo + numeración | ✅ | 206 canales numerados 1..206, 20 categorías, búsqueda |
 | Reproducción | ✅ | Media3/ExoPlayer 1.5.1: HLS, DASH, progresivo; headers por canal (User-Agent/Referer) sin recrear el player |
 | Zapping con teclas | ✅ | `KEYCODE_CHANNEL_UP/DOWN` (166/167) → canal siguiente/anterior; `PROG_RED` → modo "zap solo favoritos" |
-| Favoritos | ✅ | tecla amarilla (185) o long-press OK; persistidos en JSON |
+| Favoritos | ✅ | tecla amarilla (185) o long-press OK; persistidos en Room |
 | Banner de canal | ✅ | logo + número + nombre + ★ + "Ahora/Luego" (EPG) al cambiar de canal |
 | Grilla de canales | ✅ | Compose for TV, chips de categoría, logo por canal, foco visible (navegación **determinista**, ver §8) |
 | Setup por QR | ✅ | la TV sirve una web por HTTP; QR con `<url>/pair#<codigo>` + código de 6 dígitos |
@@ -27,7 +27,7 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
 | Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
 | Comparar canales (mosaico de miniaturas) | ✅ | **hecho en P1**: grilla de 16 tiles con un frame congelado por canal. **No hay PiP en Android TV** y el decoder de hardware es único → se congela un frame por canal, no se transmiten varios streams (ver §10) |
-| Persistencia Room / multi-lista / PWA | ❌ | fuera de P0 → P1/P2 |
+| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema v3, import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
 
 ---
 
@@ -102,7 +102,7 @@ tools/epg/scripts/fetch-mitv-epg.mjs
 | UI | Compose for TV 1.0.0 (tv-foundation / tv-material) | foco y navegación D-pad nativos |
 | Player | Media3/ExoPlayer 1.5.1 | HLS/DASH/progresivo, headers por canal |
 | Server | Ktor 3.0.3 + Netty embebido | la TV sirve la web de setup: sin servidor externo |
-| Estado | `MutableStateFlow` + store JSON (`KzStore`) | sin KSP/Room en P0 (Room llega en P1) |
+| Estado | `MutableStateFlow` + Room 2.7.2 (`KzStore`) | escrituras transaccionales y serializadas; en P0 era un store JSON |
 | Companion | Vite 5 + Preact 10 + TS | 19 KB de JS, carga instantánea en el celular |
 | QR | ZXing core 3.5.3 | sin dependencias de servicios |
 
@@ -168,6 +168,18 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 # 3. abrir "kzIPTV" en la TV
 ```
 
+### 5.1 Room en la TV real (P1)
+
+| Prueba | Resultado |
+|---|---|
+| Import del JSON legado | ✅ se importa una sola vez y queda `kz-state.json.room-backup` (4.136 bytes) |
+| Migración de esquema en la TV | ✅ `user_version` 1 → 2 → 3 sin perder datos (favoritos, tokens, pairing, calidad, resoluciones) |
+| Tests instrumentados en la TV | ✅ `OK (5 tests)`: import JSON, migración v1→v3, cache EPG + historial, 20 updates concurrentes |
+| Cache EPG | ✅ 2.474 programas en Room; arranque con parseo **10,5 s** → con cache **5,5 s** (`EPG listo ... (cache)`) |
+| Token después de migrar | ✅ el token guardado en Room sirve (`POST /api/favorite` → 200); token inválido → 401 |
+| Historial | ✅ `watch_history` guarda las reproducciones (acotado a 500 filas) |
+| Suite JVM | ✅ 76 tests verdes (`testDebugUnitTest`) |
+
 **Qué probar en 5 minutos**
 
 1. La TV arranca en el reproductor (la playlist viene embebida).
@@ -188,8 +200,10 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 2. **Mosaico + PiP** (lo único grande que falta del pedido original): miniaturas de N canales +
    PiP con un 2.º decoder.
 3. **EPG siempre fresco**: la app baja `epg/ar.xml.gz` del repo en background y cachea en Room
-   (y lo parsea una sola vez, no en cada arranque).
-4. **Room + multi-lista**: playlists propias, guardado de EPG, historial.
+   (y lo parsea una sola vez, no en cada arranque). → **el cache en Room ya está** (P1, §5.1);
+   falta la descarga en background con parseo incremental.
+4. **Room + multi-lista**: playlists propias, guardado de EPG, historial. → **Room hecho en P1**
+   (esquema v3, import del JSON legado, cache EPG e historial); falta el selector de lista en la TV.
 5. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
 6. **EPG de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
 7. Release firmado + distribución (sideload por QR / Play private track).

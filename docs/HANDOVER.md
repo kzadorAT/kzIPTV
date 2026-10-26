@@ -27,7 +27,7 @@
 | Teclado de busqueda | El **IME del sistema** (Gboard TV), no uno propio | Se-Forza menos codigo y anda mejor |
 | Comparar canales | **Mosaico de miniaturas**: un frame congelado por canal | No hay PiP en Android TV y hay **un solo decoder** (ver seccion 4) |
 | Surf | Los tiles del mosaico se **refrescan solos** (15 s el enfocado, ~2 min la pagina) | La grilla no debe quedar vieja |
-| Persistencia | **JSON** (`KzStore`) por ahora; Room es P1 | Sin KSP hasta que haga falta |
+| Persistencia | **Room 2.7.2** (`KzStore` sobre `KzDatabase`) + import 1 vez del JSON legado | Multi-lista, historial y cache EPG con transacciones |
 | EPG | Asset **bundled** `epg/ar.xml.gz` + pipeline semanal en GitHub Actions | El repo `iptv-org/epg` scrapea mi.tv (el scraper de DIRECTV esta roto) |
 
 ---
@@ -50,7 +50,33 @@ IP `192.168.1.18:5555` (ADB por WiFi; cambio desde `192.168.1.20` el 26/10/2026)
 - **Mosaico de 16 tiles** con frame congelado por canal, sin senal para los caidos, y **surf**.
 - **Salvapantallas** (`FLAG_KEEP_SCREEN_ON`) durante reproduccion y en el mosaico.
 - **BACK doble en la grilla = salir de la app** (ver seccion 5; verificado en la TV real).
-- **71 tests unitarios** verdes (`testDebugUnitTest`).
+- **76 tests unitarios** verdes (`testDebugUnitTest`) + **5 tests instrumentados** en la TV real
+  (import del JSON legado, migracion Room v1→v3, cache EPG, historial y escrituras concurrentes).
+- **Persistencia en Room** (esquema v3) con multi-lista, historial y cache EPG (ver seccion 2.1).
+
+### 2.1 Persistencia en Room (P1, verificado en la TV real)
+
+- **Room 2.7.2 + KSP 2.0.21-1.0.28**. `KzStore` queda como fachada (`StateFlow<PersistedState>`),
+  pero las escrituras son `suspend`, se serializan con un `Mutex` y se aplican en `Dispatchers.IO`
+  dentro de `database.withTransaction`.
+- **Esquema v3** (`app-tv/app/schemas/`): `playlists` (incluye el M3U que sube el companion),
+  `favorites`, `device_tokens`, `app_settings`, `quality_preferences`, `variant_states`,
+  `epg_programs` (+ `epg_cache_meta`) y `watch_history` (top 500 reproducciones).
+- **Migracion del JSON legado**: se importa una sola vez (solo si no existe la fila de settings) y
+  en una transaccion; el archivo pasa a `kz-state.json.room-backup`. Un JSON invalido queda como
+  `.invalid` y uno sobrante con Room ya cargado como `.stale-room-backup`.
+- **Migraciones Room**: `1→2` (columna `content` + tablas de EPG/historial) y `2→3` (EPG con
+  `ordinal` para conservar el orden del XMLTV). Los esquemas exportados por KSP alimentan el
+  `MigrationTestHelper` que corre en la TV.
+- **Cache EPG**: se hashea el XMLTV bundled (SHA-256); si el fingerprint coincide con el guardado,
+  se leen los 2.474 programas de Room sin parsear. Medido en la TV: **10,5 s con parseo → 5,5 s con
+  cache** (el log dice `EPG listo en ... (cache)`).
+- **Multi-lista**: la tabla `playlists` ya soporta varias fuentes; el contenido de una playlist
+  subida por el celular se guarda en Room y sobrevive al reinicio, y el merge del arranque no pisa
+  una lista agregada mientras se cargaba la red.
+- **Verificado en la TV** (TCL Smart TV Pro): la base paso de v1 a v3 sin perder favoritos, tokens,
+  codigo de emparejamiento, preferencias de calidad ni resoluciones medidas; el token guardado en
+  Room sigue sirviendo (`POST /api/favorite` → 200, token invalido → 401).
 
 ### Bugs ya resueltos (no reintroducirlos)
 
@@ -81,13 +107,19 @@ kzIPTV/
 |     |  |  |- catalog/ChannelCatalog.kt    # indice de grupos, categorias, resolve(id)
 |     |  |  |- catalog/ChannelGrouper.kt    # feeds -> canal logico (tvg-id base / nombre limpio)
 |     |  |  |- epg/EpgParser.kt             # XMLTV lineal + EpgIndex.nowNextByTvgId()
+|     |  |  |- epg/EpgCache.kt              # fingerprint SHA-256 del XMLTV (invalida el cache)
 |     |  |  |- model/Models.kt              # Channel, ChannelVariant, ChannelGroup, EpgProgram
 |     |  |  |- nav/GridNavigator.kt         # matematica de foco (fila/columna/chips)
 |     |  |  |- nav/NumberEntry.kt           # buffer 0-9 + busqueda por texto
 |     |  |  |- nav/RetryPolicy.kt           # isTransient(msg): reintentar vs marcar muerto
 |     |  |  |- nav/SurfPlanner.kt           # planificador del surf (puro, testeado)
 |     |  |  `- parse/M3uParser.kt           # m3u/m3u8 (EXTVLCOPT, KODIPROP, comas)
-|     |  |- data/KzStore.kt                 # estado persistido en JSON (filesDir/kz-state.json)
+|     |  |- data/KzStore.kt                 # fachada de persistencia sobre Room (StateFlow + Mutex)
+|     |  |- data/PlaylistMerge.kt           # merge puro de playlists (no pisa altas del companion)
+|     |  |- data/room/KzDatabase.kt         # Room v3 + migraciones 1→2 y 2→3
+|     |  |- data/room/KzEntities.kt         # playlists, favoritos, tokens, settings, EPG, historial
+|     |  |- data/room/KzDao.kt              # DAO suspend (queries + upserts)
+|     |  |- data/room/RoomStateMapper.kt    # PersistedState <-> filas de Room
 |     |  |- data/SourceRepository.kt        # descarga playlists (URL o contenido)
 |     |  |- input/RemoteKeys.kt             # keycodes del control remoto
 |     |  |- playback/PlayerManager.kt       # ExoPlayer principal (headers por canal)
@@ -117,7 +149,7 @@ kzIPTV/
 | Reglas de agrupacion de canales | `core/catalog/ChannelGrouper.kt` |
 | Ritmo del surf | `core/nav/SurfPlanner.kt` (+ `SurfPlannerTest.kt`) |
 | API del celular | `server/EmbeddedServer.kt` + `companion/src/app.tsx` |
-| Persistencia | `data/KzStore.kt` |
+| Persistencia | `data/KzStore.kt` + `data/room/` (esquema, DAO, migraciones) |
 
 ---
 
@@ -285,7 +317,9 @@ Como trabajar alrededor:
 
 ### P1 (cerrar el MVP)
 
-1. **Room** en vez del store JSON (multi-lista, historial, EPG cacheado).
+1. ~~**Room** en vez del store JSON (multi-lista, historial, EPG cacheado).~~ **Hecho (26/10/2026):**
+   esquema v3 con migraciones 1→2→3, import del JSON legado con backup, cache EPG (2.474
+   programas) e historial de reproducción. Ver seccion 2.1. Falta solo el selector de lista en la UI.
 2. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
 3. **EPG fresco**: la app baja `epg/ar.xml.gz` del repo (raw.githubusercontent) + cache en disco,
    parseo incremental (hoy parsea 2 MB en cada arranque: ~7 s de CPU).
@@ -323,6 +357,8 @@ Como trabajar alrededor:
 ## 11 - Historial de commits (para ubicarse)
 
 ```
+2b2d775 test(p1): cubrir la migracion a Room y el cache EPG
+3cb838a feat(p1): migrar la persistencia a Room
 989fe6a fix(p1): terminar el proceso al salir con BACK doble
 919b416 feat(p1): BACK doble en la raiz cierra la app + handover para el proximo chat
 c4e736f feat(p1): surf en el mosaico - los tiles se refrescan solos
@@ -336,4 +372,5 @@ b7ec21e fix(p0): ANR del parser EPG, hilo del player, auth por token y setup en 
 ```
 
 Al corte, **todo comiteado y verificado en la TV**: la salida por BACK doble, el BACK del
-celular reinyectado como tecla real y la terminacion real del proceso.
+celular reinyectado como tecla real, la terminacion real del proceso y la migracion de la
+persistencia a Room (esquema v3, con cache EPG e historial).

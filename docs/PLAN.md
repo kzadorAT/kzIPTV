@@ -196,12 +196,20 @@ Sin login: alcanza el token de emparejamiento; todo lo vivo va por WebSocket con
 
 ## 7 · Datos (Room)
 
-- sources(id, nombre, url, tipo, lastRefresh, enabled)
-- channels(id, sourceId, tvgId, nombre, logo, grupos, url, headersJson, numero, oculto, estado, lastCheck)
-- favorites(channelId, orden) · recents(channelId, watchedAt)
-- epg(tvgId, start, end, titulo, desc, categoria)
-- devices(token, nombre, pairedAt)
-- settings (DataStore): modo zap, duración banner, numeración, PIN, serverAlwaysOn
+**Implementado en P1 (Room 2.7.2, esquema v3, en `app-tv/app/src/main/java/ar/kziptv/data/room/`):**
+
+- `playlists(id, name, url, bundled, channelCount, position, content)` — multi-lista; `content` guarda
+  el M3U que sube el companion para que sobreviva al reinicio.
+- `favorites(channelId, position)` · `device_tokens(token, pairedAt)`
+- `app_settings(id=1, pairingCode, zapFavoritesOnly, lastChannelId, lastGroupId)`
+- `quality_preferences(groupId, variantId)` · `variant_states(variantId, status, measuredResolution)`
+- `epg_programs(id, ordinal, channelId, start, stop, title, description, category)` +
+  `epg_cache_meta(key, fingerprint, cachedAt, programCount)` — cache del XMLTV con fingerprint SHA-256.
+- `watch_history(id, groupId, channelId, variantId, watchedAt)` — top 500 reproducciones.
+- Migraciones `1→2` y `2→3` + import one-shot del JSON legado (`kz-state.json.room-backup`).
+
+**Pendiente:** tabla `channels` normalizada (hoy el catalogo se arma en memoria), `lastRefresh`/`enabled`
+por playlist, WorkManager con diff por `tvg-id` y settings en DataStore (hoy viven en `app_settings`).
 
 Refresh de playlist: cada 6 h (WorkManager) con diff por tvg-id → nombre que **preserva favoritos, ocultos y numeración**.
 
@@ -237,7 +245,7 @@ kzIPTV/
 | Fase | Duración | Entregable | Criterio de salida |
 |---|---|---|---|
 | **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | ✅ **cerrado** (probado en la TCL real) |
-| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: Room, refresh con diff, EPG fresco |
+| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: refresh con diff, EPG fresco y selector de lista |
 | **P2 · Guía y comparación** | 2-3 sem | grilla completa de EPG, celu como control remoto completo, health check | 🟡 **parcial**: el mosaico de miniaturas **con surf** ya está (P1) y el companion ya es control remoto. Falta la grilla de EPG. El PiP se descartó: no existe en Android TV |
 | **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | ⬜ pendiente |
 
