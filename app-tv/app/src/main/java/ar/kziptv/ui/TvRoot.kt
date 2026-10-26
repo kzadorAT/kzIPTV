@@ -38,6 +38,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -881,6 +882,10 @@ fun MosaicScreen(controller: TvController) {
 
     val columns = TvController.MOSAIC_COLUMNS
 
+    // Mientras se navega el mosaico la pantalla no se apaga: hay contenido
+    // moviendose (el surf) y no tiene sentido que la TV se duerma.
+    KeepScreenOn()
+
     Column(Modifier.fillMaxSize().background(KzBg).padding(14.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(text = "Comparar canales", color = KzBlue, fontSize = 24.sp)
@@ -890,6 +895,14 @@ fun MosaicScreen(controller: TvController) {
                 color = Color(0xFF7C8899),
                 fontSize = 13.sp
             )
+            // El surf esta vivo: los tiles se refrescan solos.
+            if (liveIndex >= 0) {
+                Text(
+                    text = "  · surf",
+                    color = Color(0xFF34D399),
+                    fontSize = 13.sp
+                )
+            }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -927,7 +940,7 @@ fun MosaicScreen(controller: TvController) {
         }
 
         Text(
-            text = "OK ver en pantalla completa \u00b7 BACK volver \u00b7 cada canal se captura por unos segundos",
+            text = "OK ver en pantalla completa \u00b7 BACK volver \u00b7 los tiles se refrescan solos (surf)",
             color = Color(0xFF56616F),
             fontSize = 12.sp,
             modifier = Modifier.padding(top = 6.dp)
@@ -1035,6 +1048,26 @@ private fun MosaicTile(
                 maxLines = 1,
                 modifier = Modifier.padding(top = 1.dp)
             )
+        }
+
+        // Indicador de captura en curso (el surf esta pasando por este canal).
+        if (live) {
+            Row(
+                Modifier.align(Alignment.TopEnd).padding(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFE5484D))
+                )
+                Text(
+                    text = " ON AIR",
+                    color = Color(0xFFE5484D),
+                    fontSize = 10.sp
+                )
+            }
         }
 
         // Abajo: el programa actual (EPG) o el error.

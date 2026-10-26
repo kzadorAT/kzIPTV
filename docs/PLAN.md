@@ -171,6 +171,9 @@ captura ese canal al instante. **OK** abre el canal en pantalla completa, **BACK
 - Un canal caído muestra su **logo** y "sin señal" (nunca un cuadro negro congelado).
 - Los feeds que fallan en serio se marcan `dead` y no se vuelven a elegir como preview.
 - EPG (programa actual) abajo de cada tile.
+- **Surf**: el tile enfocado se re-captura cada 15 s y la página se renueva en rolling cada
+  ~2 min. Al mover el foco se corta la captura en curso y se captura el canal nuevo al
+  instante. El header marca "· surf" y el tile en captura lleva un punto rojo **ON AIR**.
 
 El **PiP en vivo queda descartado**: no existe en Android TV y el SoC no tiene un segundo decoder.
 Lo que sí queda para P2 es el "surf" con refresco periódico (re-capturar el tile enfocado).
@@ -235,7 +238,7 @@ kzIPTV/
 |---|---|---|---|
 | **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | ✅ **cerrado** (probado en la TCL real) |
 | **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: Room, refresh con diff, EPG fresco |
-| **P2 · Guía y comparación** | 2-3 sem | grilla completa de EPG, surf del mosaico (re-captura periódica del tile enfocado), celu como control remoto, health check | 🟡 **parcial**: el mosaico de miniaturas ya está (P1) y el companion ya es control remoto. Falta la grilla de EPG y el surf periódico. El PiP se descartó: no existe en Android TV |
+| **P2 · Guía y comparación** | 2-3 sem | grilla completa de EPG, celu como control remoto completo, health check | 🟡 **parcial**: el mosaico de miniaturas **con surf** ya está (P1) y el companion ya es control remoto. Falta la grilla de EPG. El PiP se descartó: no existe en Android TV |
 | **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | ⬜ pendiente |
 
 ## 11 · Riesgos y fricciones

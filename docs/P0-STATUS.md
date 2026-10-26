@@ -466,6 +466,25 @@ Un único `ExoPlayer` + un único `TextureView` (`ThumbnailManager`):
 - Al mover el foco se cancela el barrido y se captura ese canal al instante; **OK** lo abre en
   pantalla completa y **BACK** vuelve a la grilla.
 
+### El surf: los tiles se refrescan solos
+
+El mosaico no queda con 16 fotos viejas: es una pared que **navega** sola.
+
+| Ritmo | Qué pasa |
+|---|---|
+| cada **15 s** | se vuelve a capturar el tile **enfocado** (el que está mirando el usuario): el canal se despierta unos segundos y vuelve a congelarse |
+| cada **~2 min** | vuelta completa a la página: los demás tiles se refrescan en rolling |
+| al **mover el foco** | se corta la captura en curso y se captura el canal nuevo al instante |
+
+En la UI el header muestra **"· surf"** mientras el loop está vivo, y el tile que se está
+capturando lleva un punto rojo **ON AIR** (por arriba del frame congelado se ve el video real).
+
+Los feeds que ya sabemos que están caídos **no se vuelven a intentar** (quedan marcados como
+`dead` por 6 h), así que el surf no gasta el decoder con canales muertos.
+
+El ritmo lo decide **`SurfPlanner`** (en `core/nav`, lógica pura sin Android): devuelve cuál es
+el próximo tile a capturar y con qué cadencia. Hay **9 tests unitarios** para el planificador.
+
 ### Tres bugs que aparecieron y cómo se resolvieron
 
 **a) Cuadro negro en los canales caídos.** `textureView.getBitmap()` devuelve un bitmap
@@ -500,4 +519,17 @@ BACK              -> vuelve a la grilla
 celular           -> botón "Comparar canales" -> la TV abre el mosaico
 2.a apertura      -> vuelve a capturar (el player se reutiliza, ya no queda muerto)
 ```
+
+**Surf** (mosaico abierto, capturas de pantalla separadas 18 s):
+
+```
+5/16 capturados · "· surf" · ON AIR en el tile #30
+13/16 capturados · ON AIR en el tile #42   (los tiles se van llenando solos)
+14/16 · 1 sin señal · ON AIR en el tile #44
+RIGHT    -> el tile #2 queda enfocado y se captura AL INSTANTE (ON AIR en #2)
+           el tile enfocado anterior ya tenía un frame NUEVO (refresco a los ~15 s)
+BACK     -> vuelve a la grilla y el surf se corta
+```
+
+Sin ANR y sin "dead thread" en el log: el surf no rompe el decoder único.
 

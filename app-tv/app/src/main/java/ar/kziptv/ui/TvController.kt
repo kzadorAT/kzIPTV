@@ -16,16 +16,19 @@ import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.core.nav.GridNavigator
 import ar.kziptv.core.nav.NumberEntry
+import ar.kziptv.core.nav.SurfPlanner
 import ar.kziptv.core.nav.RetryPolicy
 import ar.kziptv.input.RemoteKeys
 import ar.kziptv.playback.ThumbnailManager
 import ar.kziptv.playback.PlayerManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -187,8 +190,8 @@ class TvController(
      */
     val mosaic = ThumbnailManager(context)
 
-    /** Variantes ya probadas por tile (para no repetir el mismo feed). */
-    private val mosaicTried = mutableMapOf<Int, MutableSet<String>>()
+    /** El foco cambio: el loop de surf tiene que capturar ese tile ya. */
+    private var mosaicFocusDirty = false
 
     /** Reintentos de la captura por errores transitorios (tope de la sesion). */
     private var mosaicRetries = 0
@@ -385,6 +388,12 @@ class TvController(
         const val MAX_VARIANT_ATTEMPTS = 2
         /** Canales por pagina del mosaico (grilla de 4 x 4 = 16). */
         const val MOSAIC_TILES = 16
+        /** Cada cuanto se refresca el tile ENFOCADO (el que mira el usuario). */
+        const val SURF_FOCUS_MS = SurfPlanner.FOCUS_MS
+        /** Cada cuanto se refresca la pagina completa (rolling). */
+        const val SURF_PAGE_MS = SurfPlanner.PAGE_MS
+        /** Resolution del loop de surf (reactividad ante cambios de foco). */
+        const val SURF_TICK_MS = 250L
         /** Columnas del mosaico. */
         const val MOSAIC_COLUMNS = 4
         /** Un feed marcado como muerto se reintenta pasado este tiempo. */
@@ -625,8 +634,8 @@ class TvController(
         mosaicThumbs.value = emptyMap()
         mosaicPlaying.value = false
         mosaicLiveIndex.value = -1
-        mosaicTried.clear()
         mosaicRetries = 0
+        mosaicFocusDirty = false
         mosaicCaptureJob?.cancel()
         mosaicCaptureJob = null
         screen.value = Screen.MOSAIC
@@ -653,7 +662,7 @@ class TvController(
         mosaicCaptureJob?.cancel()
         mosaicCaptureJob = null
         mosaic.stop()
-        mosaicTried.clear()
+        mosaicFocusDirty = false
         mosaicPlaying.value = false
         mosaicLiveIndex.value = -1
         mosaicChannels.value = emptyList()
@@ -700,61 +709,33 @@ class TvController(
         }
 
     /**
-     * Variante para el preview del mosaico.
-     *
-     * Prioridad:
-     *  1. Un feed que YA sabemos que funciona (estado "ok"): es el que menos
-     *     sorpresas da y el que menos decodificadores gasta.
-     *  2. Si no hay ninguno conocido, el de menor ranking de calidad entre los
-     *     que no estan marcados como muertos (con 4 tiles a la vez, la CPU de la
-     *     TV es el recurso escaso, no el ancho de banda).
-     *
-     * Si el elegido falla, [onMosaicTileError] prueba la siguiente variante.
-     */
-    fun previewVariant(group: ChannelGroup): ChannelVariant? {
-        val playable = group.variants.filter { it.playable }
-        if (playable.isEmpty()) return null
-        val known = playable.filter { variantStatus(it.channelId) == ChannelVariant.STATUS_OK }
-        if (known.isNotEmpty()) {
-            return known.minByOrNull { ChannelGrouper.qualityRank(it.quality) }
-        }
-        val alive = playable.filter { variantStatus(it.channelId) != ChannelVariant.STATUS_DEAD }
-        val pool = if (alive.isNotEmpty()) alive else playable
-        return pool.minByOrNull { ChannelGrouper.qualityRank(it.quality) }
-    }
-
-    /**
      * Captura el frame de un canal y lo deja congelado en su tile.
      *
      * Es una operacion en cadena: reproduce el canal, espera a que llegue el
      * primer frame, lo congela y libera el decoder para el siguiente canal.
+     *
+     * Prioridad de variantes: primero las que ya se saben sanas (estado "ok"),
+     * despues las desconocidas. Las marcadas como muertas no se prueban: se sabe
+     * que no funcionan y el decoder de la TV es el recurso escaso.
      */
     private suspend fun captureTile(index: Int) {
         val group = mosaicChannels.value.getOrNull(index) ?: return
-        val tried = mosaicTried.getOrPut(index) { mutableSetOf() }
-        // Se prueban primero los feeds que ya se saben buenos: asi el mosaico
-        // se llena rapido con imagenes reales y no con logos.
         val variants = group.variants
             .filter { it.playable }
+            .filter { variantStatus(it.channelId) != ChannelVariant.STATUS_DEAD }
             .sortedWith(
                 compareBy<ChannelVariant> {
-                    when (variantStatus(it.channelId)) {
-                        ChannelVariant.STATUS_OK -> 0
-                        ChannelVariant.STATUS_DEAD -> 2
-                        else -> 1
-                    }
+                    if (variantStatus(it.channelId) == ChannelVariant.STATUS_OK) 0 else 1
                 }.thenBy { ChannelGrouper.qualityRank(it.quality) }
             )
         if (variants.isEmpty()) {
-            mosaicTileErrors.value = mosaicTileErrors.value + (index to "sin variantes")
+            // Todos los feeds del canal estan caidos: no se gasta el decoder.
+            // El tile conserva la miniatura anterior (si tenia).
             return
         }
 
         var lastError = "sin senal"
         for (variant in variants) {
-            if (tried.contains(variant.channelId)) continue
-            tried.add(variant.channelId)
-
             var attempt = 0
             while (true) {
                 // La UI crea el TextureView de este tile (y solo de este).
@@ -773,6 +754,8 @@ class TvController(
                     mosaicTileErrors.value = mosaicTileErrors.value - index
                     mosaicLiveIndex.value = -1
                     mosaicPlaying.value = false
+                    // El presupuesto de reintentos se repone: algo anda bien.
+                    mosaicRetries = 0
                     return
                 }
                 lastError = result.error ?: "sin senal"
@@ -798,25 +781,73 @@ class TvController(
             }
         }
 
-        // No hay mas variantes: el tile queda sin senal y muestra el logo.
+        // No hay mas variantes: el tile conserva la miniatura anterior (si
+        // habia) y queda marcado como caido.
         mosaicLiveIndex.value = -1
         mosaicPlaying.value = false
         mosaicTileErrors.value = mosaicTileErrors.value + (index to lastError)
     }
 
     /**
-     * Barrido: toma un frame de cada tile, uno por uno.
+     * El "surf": el grid se llena y despues se refresca solo.
      *
-     * El grid se va llenando solo mientras el usuario mira. Si el usuario mueve
-     * el foco, el barrido se corta y se captura el canal enfocado.
+     * - El tile ENFOCADO (el que esta mirando el usuario) se vuelve a capturar
+     *   cada SURF_FOCUS_MS: el canal se despierta unos segundos y vuelve a
+     *   congelarse.
+     * - El resto de la pagina se refresca en rolling: una vuelta completa cada
+     *   SURF_PAGE_MS.
+     *
+     * En la TV hay UN solo decoder de video: las capturas son SIEMPRE de a una.
+     * Si el usuario mueve el foco, la captura en curso se corta y se hace la del
+     * canal enfocado.
      */
     private fun startMosaicSweep() {
         mosaicSweepJob?.cancel()
+        mosaicCaptureJob?.cancel()
         mosaicSweepJob = scope.launch {
             val total = mosaicChannels.value.size
-            for (index in 0 until total) {
-                if (mosaicFocus.value != 0) return@launch
-                captureTile(index)
+            if (total == 0) return@launch
+            // El ritmo lo decide SurfPlanner (logica pura, testeada).
+            var plan = SurfPlanner.Plan(-1, 0L, 0L, 0, false)
+
+            while (isActive && screen.value == Screen.MOSAIC) {
+                val focus = mosaicFocus.value.coerceIn(0, total - 1)
+                plan = SurfPlanner.plan(
+                    total = total,
+                    focus = focus,
+                    now = System.currentTimeMillis(),
+                    focusDirty = mosaicFocusDirty,
+                    lastFocusAt = plan.lastFocusAt,
+                    lastPageAt = plan.lastPageAt,
+                    nextIndex = plan.nextIndex,
+                    pagePending = plan.pagePending
+                )
+                val target = plan.target
+                if (target < 0) {
+                    // Nada vencido todavia: se espera un toque.
+                    delay(SURF_TICK_MS)
+                    continue
+                }
+                if (target == focus) mosaicFocusDirty = false
+
+                val job = scope.launch {
+                    try {
+                        captureTile(target)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        android.util.Log.e(
+                            "KzIPTV",
+                            "fallo la captura del tile " + target,
+                            e
+                        )
+                    }
+                }
+                mosaicCaptureJob = job
+                job.join()
+                if (target == focus) {
+                    plan = plan.copy(lastFocusAt = System.currentTimeMillis())
+                }
             }
         }
     }
@@ -836,11 +867,12 @@ class TvController(
         index = index.coerceIn(0, n - 1)
         if (index != mosaicFocus.value) {
             mosaicFocus.value = index
-            // El barrido se corta: ahora interesa el canal enfocado.
-            mosaicSweepJob?.cancel()
-            mosaicSweepJob = null
+            // La captura en curso se corta: ahora interesa el canal enfocado.
             mosaicCaptureJob?.cancel()
-            mosaicCaptureJob = scope.launch { captureTile(index) }
+            mosaicCaptureJob = null
+            // El loop de surf captura este tile apenas puede (no hay que esperar
+            // a que termine la vuelta de la pagina).
+            mosaicFocusDirty = true
         }
     }
     /**

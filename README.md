@@ -37,6 +37,9 @@ kzIPTV/
   grilla de **16 tiles** con un frame congelado de cada canal. Cada tile se reproduce unos
   segundos, se congela y se sigue con el siguiente, porque la TV tiene **un solo decoder de
   video por hardware**. Un canal caído muestra su logo y "sin señal" en vez de un cuadro negro.
+- **Surf**: los tiles se refrescan solos — el que tenés enfocado se vuelve a capturar cada
+  15 s y la página entera se renueva cada ~2 min. El tile en captura lleva un punto rojo
+  **ON AIR**.
 - **Salvapantallas**: la pantalla no se apaga durante la reproducción (`FLAG_KEEP_SCREEN_ON`).
 - **Setup por QR**: la TV levanta un server embebido, el celular entra por QR con código de 6
   dígitos y queda emparejado con un token.
