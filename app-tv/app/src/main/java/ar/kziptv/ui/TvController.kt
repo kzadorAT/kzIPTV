@@ -1,6 +1,7 @@
 package ar.kziptv.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import ar.kziptv.core.catalog.ChannelCatalog
 import ar.kziptv.core.catalog.ChannelGrouper
 import ar.kziptv.core.epg.EpgIndex
@@ -17,6 +18,7 @@ import ar.kziptv.core.nav.GridNavigator
 import ar.kziptv.core.nav.NumberEntry
 import ar.kziptv.core.nav.RetryPolicy
 import ar.kziptv.input.RemoteKeys
+import ar.kziptv.playback.ThumbnailManager
 import ar.kziptv.playback.PlayerManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -24,13 +26,12 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
 
-enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH }
+enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -89,6 +90,8 @@ data class StateDto(
     val numberBuffer: String = "",
     /** Texto de la busqueda en curso. */
     val searchQuery: String = "",
+    /** Errores por tile del mosaico (indice -> mensaje). */
+    val mosaicErrors: Map<String, String> = emptyMap(),
     /** Id del resultado de busqueda enfocado (vacio = foco en el campo). */
     val focusedSearchId: String? = null,
     /** Nombre del resultado de busqueda enfocado. */
@@ -139,6 +142,24 @@ class TvController(
     /** Resultados de la busqueda por texto (pantalla SEARCH). */
     val searchResults = MutableStateFlow<List<ChannelGroup>>(emptyList())
 
+    /** Canales que se comparan en el mosaico (uno por tile). */
+    val mosaicChannels = MutableStateFlow<List<ChannelGroup>>(emptyList())
+
+    /** Tile enfocado del mosaico. */
+    val mosaicFocus = MutableStateFlow(0)
+
+    /** Errores por tile del mosaico (indice -> mensaje). Un tile caido muestra el logo. */
+    val mosaicTileErrors = MutableStateFlow<Map<Int, String>>(emptyMap())
+
+    /** El preview del mosaico (canal enfocado) esta reproduciendo? */
+    val mosaicPlaying = MutableStateFlow(false)
+
+    /** Miniaturas capturadas: indice del tile -> frame congelado. */
+    val mosaicThumbs = MutableStateFlow<Map<Int, Bitmap>>(emptyMap())
+
+    /** Tile que se esta capturando ahora (-1 = ninguno). Es el unico con video. */
+    val mosaicLiveIndex = MutableStateFlow(-1)
+
     /** Canal enfocado dentro de los resultados de busqueda. */
     val focusedSearchId = MutableStateFlow<String?>(null)
 
@@ -153,6 +174,34 @@ class TvController(
      * del sistema esta abierto. En ese estado el sistema maneja las teclas.
      */
     val searchFieldFocused = MutableStateFlow(false)
+
+    /**
+     * Mosaico de miniaturas: N canales a la vista, uno por tile.
+     *
+     * Cada tile se reproduce unos segundos, se congela un frame y se sigue con
+     * el siguiente. El decoder de hardware de la TV es UNICO: mantener cuatro
+     * streams a la vez lleva al 86% de CPU y cuelga la app.
+     *
+     * En Android TV no hay PiP del sistema, asi que la vista de captura se hace
+     * con un TextureView propio.
+     */
+    val mosaic = ThumbnailManager(context)
+
+    /** Variantes ya probadas por tile (para no repetir el mismo feed). */
+    private val mosaicTried = mutableMapOf<Int, MutableSet<String>>()
+
+    /** Reintentos de la captura por errores transitorios (tope de la sesion). */
+    private var mosaicRetries = 0
+
+    /** Trabajo de barrido: va tomando un frame de cada tile, uno por uno. */
+    private var mosaicSweepJob: Job? = null
+
+    /** Captura puntual del tile enfocado (corta el barrido). */
+    private var mosaicCaptureJob: Job? = null
+
+    /** A donde vuelve BACK cuando el canal se eligio desde una lista. */
+    private var playerBackScreen: Screen = Screen.PLAYER
+
     val playbackState = MutableStateFlow("idle")
     val playbackError = MutableStateFlow("")
     val videoWidth = MutableStateFlow(0)
@@ -332,6 +381,12 @@ class TvController(
         const val STABLE_PLAYING_MS = 8_000L
         /** Tope global de reintentos transitorios antes de cortar. */
         const val MAX_TRANSIENT_RETRIES = 6
+        /** Intentos por variante en la captura del mosaico. */
+        const val MAX_VARIANT_ATTEMPTS = 2
+        /** Canales por pagina del mosaico (grilla de 4 x 4 = 16). */
+        const val MOSAIC_TILES = 16
+        /** Columnas del mosaico. */
+        const val MOSAIC_COLUMNS = 4
         /** Un feed marcado como muerto se reintenta pasado este tiempo. */
         const val DEAD_TTL_MS = 6 * 60 * 60 * 1000L
         const val BUNDLED_ID = "bundled-ar"
@@ -540,7 +595,264 @@ class TvController(
 
     fun back() {
         focusedCategory.value = null
-        screen.value = if (screen.value == Screen.SEARCH) Screen.GRID else Screen.PLAYER
+        when (screen.value) {
+            Screen.SEARCH -> screen.value = Screen.GRID
+            Screen.MOSAIC -> closeMosaic()
+            // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
+            // BACK devuelve a esa lista. Si se estaba zapeando, vuelve al video.
+            Screen.PLAYER -> screen.value = playerBackScreen
+            else -> screen.value = Screen.PLAYER
+        }
+    }
+
+    /**
+     * Abre el mosaico: una grilla de canales con un frame congelado de cada uno.
+     *
+     * Cada tile se captura reproduciendo el canal unos segundos: el decoder de
+     * hardware de la TV es UNICO, asi que se van haciendo de a uno y el grid se
+     * llena solo. Los tiles son los canales que siguen al que estas mirando
+     * (y los favoritos van primero).
+     */
+    fun openMosaic() {
+        val list = mosaicSource()
+        if (list.isEmpty()) {
+            status.value = "No hay canales para comparar"
+            return
+        }
+        mosaicChannels.value = list
+        mosaicFocus.value = 0
+        mosaicTileErrors.value = emptyMap()
+        mosaicThumbs.value = emptyMap()
+        mosaicPlaying.value = false
+        mosaicLiveIndex.value = -1
+        mosaicTried.clear()
+        mosaicRetries = 0
+        mosaicCaptureJob?.cancel()
+        mosaicCaptureJob = null
+        screen.value = Screen.MOSAIC
+        // El player principal suelta el decoder: en la TV hay UNO por hardware
+        // y lo necesita la captura.
+        player.suspendVideo()
+        // El player de captura arranca limpio (puede quedar una captura a medias
+        // de la apertura anterior).
+        mosaic.stop()
+        // El grid se va llenando solo, canal por canal.
+        startMosaicSweep()
+    }
+
+    /**
+     * Cierra el mosaico.
+     *
+     * OJO: el player de captura NO se libera, solo se detiene. Si se liberara,
+     * la segunda vez que se abre el mosaico en la misma sesion el player queda
+     * muerto ("Handler on a dead thread") y no se captura ningun canal.
+     */
+    fun closeMosaic() {
+        mosaicSweepJob?.cancel()
+        mosaicSweepJob = null
+        mosaicCaptureJob?.cancel()
+        mosaicCaptureJob = null
+        mosaic.stop()
+        mosaicTried.clear()
+        mosaicPlaying.value = false
+        mosaicLiveIndex.value = -1
+        mosaicChannels.value = emptyList()
+        mosaicTileErrors.value = emptyMap()
+        mosaicThumbs.value = emptyMap()
+        mosaicFocus.value = 0
+        screen.value = Screen.GRID
+    }
+
+    /**
+     * Los canales a comparar.
+     *
+     * Empieza por los favoritos (son los que el usuario ya eligio) y completa con
+     * los canales que siguen al que esta mirando, hasta llenar los tiles.
+     */
+    private fun mosaicSource(): List<ChannelGroup> {
+        val active = activeList()
+        if (active.isEmpty()) return emptyList()
+        val current = currentGroup.value
+        val start = active.indexOfFirst { it.id == current?.id }
+        // Rotacion: el mosaico arranca por el canal que estas mirando.
+        val rotated = if (start >= 0) {
+            active.subList(start, active.size) + active.subList(0, start)
+        } else {
+            active
+        }
+        val favs = favoritesList()
+        val picked = LinkedHashMap<String, ChannelGroup>()
+        // Primero los favoritos, despues los que siguen al actual. Pero solo
+        // los que tienen AL MENOS un feed vivo: un mosaico lleno de canales
+        // caidos no sirve para comparar nada.
+        favs.filter { hasLiveFeed(it) }.forEach { picked.putIfAbsent(it.id, it) }
+        rotated.filter { hasLiveFeed(it) }.forEach { picked.putIfAbsent(it.id, it) }
+        // Si no alcanzan, se completa con los que quedan (se veran sin senal).
+        favs.forEach { picked.putIfAbsent(it.id, it) }
+        rotated.forEach { picked.putIfAbsent(it.id, it) }
+        return picked.values.take(MOSAIC_TILES)
+    }
+
+    /** El canal tiene algun feed que no sabemos que este muerto? */
+    private fun hasLiveFeed(group: ChannelGroup): Boolean =
+        group.variants.any {
+            it.playable && variantStatus(it.channelId) != ChannelVariant.STATUS_DEAD
+        }
+
+    /**
+     * Variante para el preview del mosaico.
+     *
+     * Prioridad:
+     *  1. Un feed que YA sabemos que funciona (estado "ok"): es el que menos
+     *     sorpresas da y el que menos decodificadores gasta.
+     *  2. Si no hay ninguno conocido, el de menor ranking de calidad entre los
+     *     que no estan marcados como muertos (con 4 tiles a la vez, la CPU de la
+     *     TV es el recurso escaso, no el ancho de banda).
+     *
+     * Si el elegido falla, [onMosaicTileError] prueba la siguiente variante.
+     */
+    fun previewVariant(group: ChannelGroup): ChannelVariant? {
+        val playable = group.variants.filter { it.playable }
+        if (playable.isEmpty()) return null
+        val known = playable.filter { variantStatus(it.channelId) == ChannelVariant.STATUS_OK }
+        if (known.isNotEmpty()) {
+            return known.minByOrNull { ChannelGrouper.qualityRank(it.quality) }
+        }
+        val alive = playable.filter { variantStatus(it.channelId) != ChannelVariant.STATUS_DEAD }
+        val pool = if (alive.isNotEmpty()) alive else playable
+        return pool.minByOrNull { ChannelGrouper.qualityRank(it.quality) }
+    }
+
+    /**
+     * Captura el frame de un canal y lo deja congelado en su tile.
+     *
+     * Es una operacion en cadena: reproduce el canal, espera a que llegue el
+     * primer frame, lo congela y libera el decoder para el siguiente canal.
+     */
+    private suspend fun captureTile(index: Int) {
+        val group = mosaicChannels.value.getOrNull(index) ?: return
+        val tried = mosaicTried.getOrPut(index) { mutableSetOf() }
+        // Se prueban primero los feeds que ya se saben buenos: asi el mosaico
+        // se llena rapido con imagenes reales y no con logos.
+        val variants = group.variants
+            .filter { it.playable }
+            .sortedWith(
+                compareBy<ChannelVariant> {
+                    when (variantStatus(it.channelId)) {
+                        ChannelVariant.STATUS_OK -> 0
+                        ChannelVariant.STATUS_DEAD -> 2
+                        else -> 1
+                    }
+                }.thenBy { ChannelGrouper.qualityRank(it.quality) }
+            )
+        if (variants.isEmpty()) {
+            mosaicTileErrors.value = mosaicTileErrors.value + (index to "sin variantes")
+            return
+        }
+
+        var lastError = "sin senal"
+        for (variant in variants) {
+            if (tried.contains(variant.channelId)) continue
+            tried.add(variant.channelId)
+
+            var attempt = 0
+            while (true) {
+                // La UI crea el TextureView de este tile (y solo de este).
+                mosaicPlaying.value = false
+                mosaicLiveIndex.value = index
+                // Se espera a que la vista exista y a que el decoder entregue un frame.
+                delay(350)
+                val result = mosaic.capture(variant.toChannel())
+                if (result.played) {
+                    // El feed arranco: queda marcado como bueno para las proximas.
+                    markVariant(variant.channelId, ChannelVariant.STATUS_OK)
+                    mosaicPlaying.value = true
+                }
+                if (result.bitmap != null) {
+                    mosaicThumbs.value = mosaicThumbs.value + (index to result.bitmap)
+                    mosaicTileErrors.value = mosaicTileErrors.value - index
+                    mosaicLiveIndex.value = -1
+                    mosaicPlaying.value = false
+                    return
+                }
+                lastError = result.error ?: "sin senal"
+                // Un error transitorio (datos viejos, timeout) se reintenta: el
+                // feed puede volver. Uno permanente (403/404) se marca como muerto
+                // y se pasa a la siguiente variante del canal.
+                if (RetryPolicy.isTransient(lastError) &&
+                    attempt < MAX_VARIANT_ATTEMPTS &&
+                    mosaicRetries < MAX_TRANSIENT_RETRIES
+                ) {
+                    attempt++
+                    mosaicRetries++
+                    // El feed suele estar en el borde "live": reconectar
+                    // demasiado rapido vuelve a fallar.
+                    delay(1_500)
+                    continue
+                }
+                break
+            }
+            // Un feed permanentemente roto no se vuelve a elegir como preview.
+            if (!RetryPolicy.isTransient(lastError)) {
+                markVariant(variant.channelId, ChannelVariant.STATUS_DEAD)
+            }
+        }
+
+        // No hay mas variantes: el tile queda sin senal y muestra el logo.
+        mosaicLiveIndex.value = -1
+        mosaicPlaying.value = false
+        mosaicTileErrors.value = mosaicTileErrors.value + (index to lastError)
+    }
+
+    /**
+     * Barrido: toma un frame de cada tile, uno por uno.
+     *
+     * El grid se va llenando solo mientras el usuario mira. Si el usuario mueve
+     * el foco, el barrido se corta y se captura el canal enfocado.
+     */
+    private fun startMosaicSweep() {
+        mosaicSweepJob?.cancel()
+        mosaicSweepJob = scope.launch {
+            val total = mosaicChannels.value.size
+            for (index in 0 until total) {
+                if (mosaicFocus.value != 0) return@launch
+                captureTile(index)
+            }
+        }
+    }
+
+    /** Mueve el foco entre los tiles del mosaico (grilla de 2 columnas). */
+    private fun moveMosaicFocus(code: Int) {
+        val n = mosaicChannels.value.size
+        if (n == 0) return
+        val columns = MOSAIC_COLUMNS
+        var index = mosaicFocus.value
+        when (code) {
+            RemoteKeys.DPAD_LEFT -> if (index % columns > 0) index--
+            RemoteKeys.DPAD_RIGHT -> if (index % columns < columns - 1 && index + 1 < n) index++
+            RemoteKeys.DPAD_UP -> if (index >= columns) index -= columns
+            RemoteKeys.DPAD_DOWN -> if (index + columns < n) index += columns
+        }
+        index = index.coerceIn(0, n - 1)
+        if (index != mosaicFocus.value) {
+            mosaicFocus.value = index
+            // El barrido se corta: ahora interesa el canal enfocado.
+            mosaicSweepJob?.cancel()
+            mosaicSweepJob = null
+            mosaicCaptureJob?.cancel()
+            mosaicCaptureJob = scope.launch { captureTile(index) }
+        }
+    }
+    /**
+     * Libera los recursos del controller (cuando la activity se destruye).
+     *
+     * El player de captura se suelta recien aca: durante la sesion se reutiliza
+     * porque el mosaico se abre y se cierra varias veces.
+     */
+    fun release() {
+        mosaicSweepJob?.cancel()
+        mosaicCaptureJob?.cancel()
+        mosaic.release()
     }
 
     fun openPairing() {
@@ -601,7 +913,12 @@ class TvController(
                     setCategory(if (chip.isEmpty()) null else chip)
                     focusGrid()
                 } else {
-                    focusedGroupId.value?.let { id -> catalog.value.groupById[id]?.let { play(it) } }
+                    focusedGroupId.value?.let { id ->
+                        catalog.value.groupById[id]?.let {
+                            playerBackScreen = Screen.GRID
+                            play(it)
+                        }
+                    }
                 }
             }
             Screen.PLAYER -> openGrid()
@@ -615,6 +932,15 @@ class TvController(
                 } else {
                     playFocusedSearchResult()
                 }
+            Screen.MOSAIC -> {
+                val group = mosaicChannels.value.getOrNull(mosaicFocus.value)
+                if (group != null) {
+                    closeMosaic()
+                    // BACK desde el canal vuelve a la grilla.
+                    playerBackScreen = Screen.GRID
+                    play(group)
+                }
+            }
             Screen.SETUP -> Unit
         }
     }
@@ -768,6 +1094,8 @@ class TvController(
     fun playFocusedSearchResult() {
         val id = focusedSearchId.value ?: return
         val target = catalog.value.groupById[id] ?: return
+        // BACK desde el canal vuelve a la busqueda.
+        playerBackScreen = Screen.SEARCH
         play(target)
     }
 
@@ -808,6 +1136,7 @@ class TvController(
             Screen.GRID -> moveGridFocus(code)
             Screen.QUALITY -> moveQualityFocus(code)
             Screen.SEARCH -> moveSearchFocus(code)
+            Screen.MOSAIC -> moveMosaicFocus(code)
             else -> Unit
         }
     }
@@ -914,6 +1243,7 @@ class TvController(
             videoHeight = videoHeight.value,
             numberBuffer = numberBuffer.value,
             searchQuery = query.value,
+            mosaicErrors = mosaicTileErrors.value.mapKeys { it.key.toString() },
             focusedSearchId = focusedSearchId.value,
             focusedSearchName = focusedSearchId.value?.let { id ->
                 catalog.value.groupById[id]?.name

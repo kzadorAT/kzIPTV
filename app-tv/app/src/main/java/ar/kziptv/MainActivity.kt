@@ -79,7 +79,10 @@ class MainActivity : ComponentActivity() {
             // sistema esta abierto: las teclas las maneja el, no nosotros.
             val imeOpen = screen == Screen.SEARCH && controller.searchFieldFocused.value
             if (!imeOpen &&
-                (screen == Screen.GRID || screen == Screen.QUALITY || screen == Screen.SEARCH)
+                (
+                    screen == Screen.GRID || screen == Screen.QUALITY ||
+                        screen == Screen.SEARCH || screen == Screen.MOSAIC
+                    )
             ) {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.onDpad(event.keyCode)
                 return true
@@ -106,7 +109,12 @@ class MainActivity : ComponentActivity() {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.openSearch()
                 return true
             }
-            RemoteKeys.PROG_BLUE, RemoteKeys.MENU -> {
+            RemoteKeys.MENU, RemoteKeys.INFO -> {
+                // MENU/INFO: mosaico para comparar canales.
+                if (event.action == KeyEvent.ACTION_DOWN) controller.openMosaic()
+                return true
+            }
+            RemoteKeys.PROG_BLUE -> {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.openPairing()
                 return true
             }
@@ -155,6 +163,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         current = null
         server?.stop()
+        controller.release()
         controller.player.release()
         super.onDestroy()
     }

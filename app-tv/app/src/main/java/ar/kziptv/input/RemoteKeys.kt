@@ -8,6 +8,8 @@ object RemoteKeys {
     const val PROG_YELLOW = 185
     const val PROG_BLUE = 186
     const val MENU = 82
+    /** Boton INFO: abre el mosaico para comparar canales. */
+    const val INFO = 172
     const val MEDIA_PLAY_PAUSE = 85
     const val OK = 23               // KEYCODE_DPAD_CENTER
     const val ENTER = 66

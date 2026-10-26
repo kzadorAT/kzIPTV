@@ -26,7 +26,7 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Robustez de reproducción | ✅ | error visible en pantalla, salto automático al canal siguiente, retoma el último canal al abrir. Ver §7 |
 | Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
 | Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
-| Comparar canales (mosaico + PiP) | ❌ | fuera de P0 → **P2** |
+| Comparar canales (mosaico de miniaturas) | ✅ | **hecho en P1**: grilla de 16 tiles con un frame congelado por canal. **No hay PiP en Android TV** y el decoder de hardware es único → se congela un frame por canal, no se transmiten varios streams (ver §10) |
 | Persistencia Room / multi-lista / PWA | ❌ | fuera de P0 → P1/P2 |
 
 ---
@@ -417,5 +417,87 @@ BACK             -> cierra el IME, la pantalla sigue en SEARCH
 DOWN             -> baja al primer resultado
 OK               -> reproduce y vuelve al PLAYER
 1 2 + OK        -> salta directo al canal 12 (Catamarca TV)
+```
+
+---
+
+## 10 · Comparar canales: por qué NO hay mosaico en vivo (y cómo se resolvió)
+
+### Los tres hechos que cambiaron el diseño
+
+1. **La TV tiene UN solo decoder de video por hardware.**
+
+   ```
+   OMX.realtek.video.decoder (RTKOMX_CORE, refCount 0)   <-- UNICA instancia
+   c2.android.aac.decoder                                 <-- audio por software
+   ```
+
+   La primera versión del mosaico era "cuatro canales en vivo a la vez" (2x2 con PiP). Con
+   cuatro `ExoPlayer` los que no entran al decoder caen a **decodificación por software**: la
+   app llegó al **86 % de CPU** (64 % user + 22 % kernel, 458.353 faults) y murió sin excepción
+   Java. El Dropbox de la TV lo dejó escrito:
+
+   ```
+   Subject: Input dispatching timed out (... is not responding. Waited 10005ms for FocusEvent)
+   ```
+
+2. **Android TV no tiene PiP del sistema.** `pm list features` de la TV solo declara
+   `android.hardware.type.television`, `android.software.leanback` y `android.software.leanback_only`.
+   No hay `android.software.picture_in_picture`: el PiP es de celular/tablet.
+
+3. **El pedido se puede cumplir igual.** Comparar canales no es "mirar cuatro streams": es
+   **ver de un vistazo qué está pasando en cada señal**. Un frame congelado alcanza, y como
+   no hay decoder compartido, se pueden mostrar **muchos más canales**.
+
+### La solución: mosaico de miniaturas
+
+Un único `ExoPlayer` + un único `TextureView` (`ThumbnailManager`):
+
+| Pieza | Qué hace |
+|---|---|
+| `ThumbnailManager.capture(channel)` | reproduce el canal, espera el primer frame, congela con `textureView.getBitmap()` y detiene el player |
+| `TvController.captureTile(index)` | prueba las variantes del canal (primero las que ya se saben sanas), reintenta los errores transitorios y marca como muerto lo que falla en serio |
+| `TvController.startMosaicSweep()` | recorre los 16 tiles de a uno: el grid se va llenando solo mientras el usuario mira |
+| `MosaicTile` (Compose) | muestra el frame congelado, el logo del canal si todavía no se capturó, y "sin señal" si el feed está caído |
+
+- **16 tiles (4x4)**, con el programa actual del EPG abajo de cada uno.
+- Tecla **MENU** o **INFO** abre el mosaico; también el botón **Comparar canales** del celular
+  (`{"type":"mosaic"}`).
+- Al mover el foco se cancela el barrido y se captura ese canal al instante; **OK** lo abre en
+  pantalla completa y **BACK** vuelve a la grilla.
+
+### Tres bugs que aparecieron y cómo se resolvieron
+
+**a) Cuadro negro en los canales caídos.** `textureView.getBitmap()` devuelve un bitmap
+-aunque sea negro- aunque el feed nunca haya renderizado un frame. El mosaico congelaba
+negros y el contador decía "12/12 capturados" con tres canales sin imagen. Ahora
+`ThumbnailManager` marca `frameRendered` en `onRenderedFirstFrame` (filtrando por
+`mediaId`, para no contar frames del canal anterior) y `capture()` devuelve `null` cuando
+no hubo frame: el tile muestra el logo y "sin señal".
+
+**b) El mosaico solo funcionaba la primera vez.** `closeMosaic()` liberaba el player de
+captura (`mosaic.release()`), pero el `ThumbnailManager` es único por sesión: al abrir el
+mosaico de nuevo, el player estaba **muerto** y el log repetía
+
+```
+W MessageQueue: java.lang.IllegalStateException: Handler sending message to a Handler on a dead thread
+```
+
+La TV se quedaba con "0/16 capturados". Ahora `closeMosaic()` solo **detiene** el player
+(`mosaic.stop()`) y el `release()` real ocurre en `MainActivity.onDestroy`.
+
+**c) BACK desde el canal no volvía a la grilla.** `back()` mandaba siempre al player. Ahora
+el controller recuerda de dónde salió el canal (`playerBackScreen`) y vuelve a la grilla, a
+la búsqueda o al mosaico según corresponda.
+
+### Verificado en la TV
+
+```
+MENU / INFO       -> abre "Comparar canales"
+(barrido)         -> "13/16 capturados · 3 sin señal": frames reales congelados
+OK                -> abre el canal enfocado en pantalla completa
+BACK              -> vuelve a la grilla
+celular           -> botón "Comparar canales" -> la TV abre el mosaico
+2.a apertura      -> vuelve a capturar (el player se reutiliza, ya no queda muerto)
 ```
 

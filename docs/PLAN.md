@@ -1,6 +1,6 @@
 # kzIPTV — Diseño y plan (v1)
 
-> IPTV player para **Android TV**: listas m3u (iptv-org y propias), setup por **QR desde el celular** sin escribir en la TV, zapping con las teclas **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico + PiP**).
+> IPTV player para **Android TV**: listas m3u (iptv-org y propias), setup por **QR desde el celular** sin escribir en la TV, zapping con las teclas **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico de miniaturas**).
 
 Estado: diseño cerrado (24/10/2026) · **P0 cerrado** (spike probado en la TV real) · **P1 en curso** · fase actual: **P1 (MVP)**
 
@@ -8,7 +8,11 @@ Estado: diseño cerrado (24/10/2026) · **P0 cerrado** (spike probado en la TV r
 
 **Qué es kzIPTV**: app nativa de Android TV que reproduce listas m3u (HLS/DASH) con una UX pensada 100% para el control remoto, y que se configura desde el celular escaneando un QR — sin teclado en la TV, sin servidor externo.
 
-Dentro de alcance (v1): zapping, favoritos, lista completa por categorías, búsqueda, EPG (ahora/siguiente + grilla), mosaico y PiP, celular como control remoto, múltiples playlists, ocultos/parental.
+Dentro de alcance (v1): zapping, favoritos, lista completa por categorías, búsqueda, EPG (ahora/siguiente + grilla), mosaico de miniaturas, celular como control remoto, múltiples playlists, ocultos/parental.
+
+> **Actualización (P1, medido en la TV):** el PiP del sistema **no existe en Android TV** y la TV
+> tiene **un solo decoder de video por hardware**. La comparación se implementó como mosaico de
+> miniaturas (un frame congelado por canal). Ver [P0-STATUS.md §10](P0-STATUS.md).
 
 Fuera de alcance (v1): grabación/DVR, catch-up (la playlist de referencia no lo trae), sync entre TVs (P3), port a Samsung/LG (los parsers y el companion se reusan si algún día hace falta).
 
@@ -46,15 +50,15 @@ Playlist de referencia: https://iptv-org.github.io/iptv/countries/ar.m3u
 | Lista completa por categorías | ✅ | 20 grupos del m3u ("Undefined"→"Otros"), logos 100% |
 | Búsqueda + número directo 0-9 | ✅ | teclado QWERTY D-pad + escribir desde el celu; buffer numérico |
 | EPG ahora/siguiente + grilla | ✅ | XMLTV semanal generado con utilidades iptv-org/epg (GitHub Action gratis) |
-| Mosaico de previews "en vivo" | ✅ | miniaturas capturadas en la propia TV (2.ª instancia ExoPlayer + ImageReader) |
-| PiP en vivo | ✅* | 2.º decodificador real; *según SoC, con fallback a miniatura |
+| Mosaico de previews | ✅ | **implementado en P1**: 16 tiles, un frame congelado por canal, capturado en la propia TV con un único ExoPlayer + TextureView |
+| PiP en vivo | ❌ | **Android TV no tiene PiP del sistema** (`pm list features` no lo declara). El SoC tiene un solo decoder de video: con 4 streams la app llega al 86 % de CPU y ANR |
 | Celular como control remoto | ✅ | misma conexión: D-pad virtual, teclado, lanzar canales |
 | Favoritos iguales en varias TVs | ⚠️ P3 | sin server: export/import o sync por archivo/relay mínimo |
 | Timeshift / catch-up | ⚠️ | playlist sin catchup; DVR local recién en P3 |
 | Ocultar canales / parental | ✅ | PIN por canal o categoría |
 | Streams con headers custom | ✅ | #EXTVLCOPT → per-request headers en ExoPlayer |
 
-**La única limitación física real** es el decodificador: 1 principal + 1 secundario en la mayoría de los SoC de TV. Por eso el mosaico usa miniaturas refrescadas y el PiP es el único video simultáneo extra.
+**La única limitación física real** es el decodificador. En la TCL Smart TV Pro (Realtek RTD2880) hay **una sola instancia** de `OMX.realtek.video.decoder`: por eso el mosaico congela un frame por canal (con un único player) en vez de transmitir varios streams a la vez. El PiP del sistema no es una opción en Android TV.
 
 ## 4 · Arquitectura
 
@@ -157,10 +161,19 @@ separado y el primero que se reproduce puede estar muerto (pantalla negra).
 **Por qué no es "cosmetics"**: hoy la primera reproducción de la app es un canal muerto (403) y
 deja la pantalla negra. Con agrupación + fallback, el arranque cae siempre en un canal vivo.
 
-### Comparar canales (ambos modos)
-**Mosaico "Surf"** (P2): grilla 4×3 con miniaturas refrescadas cada 30-60 s **solo de la página visible**; la tarjeta enfocada se agranda con preview + ahora/siguiente; OK sintoniza. Implementación on-device: worker secuencial que reproduce cada canal muteado 1-2 s a 320×180 sobre un ImageReader (2.ª instancia de ExoPlayer), captura un frame y cierra; timeout de 6 s y máximo 1 job a la vez (plan B: binario ffmpeg estático si algún SoC da problemas).
+### Comparar canales (mosaico de miniaturas) — **hecho en P1**
 
-**PiP** (P2): el canal actual queda en una esquina (video vivo, 2.º decodificador) mientras navegás listas/guía/mosaico; toggle desde el banner; fallback a miniatura refrescada si el SoC no maneja 2 decoders.
+Grilla de **16 tiles (4×4)**: cada canal se reproduce unos segundos, se congela un frame y se sigue
+con el siguiente (un único `ExoPlayer` + un único `TextureView`, porque el decoder es único).
+El grid se va llenando solo mientras el usuario mira; al mover el foco se cancela el barrido y se
+captura ese canal al instante. **OK** abre el canal en pantalla completa, **BACK** vuelve.
+
+- Un canal caído muestra su **logo** y "sin señal" (nunca un cuadro negro congelado).
+- Los feeds que fallan en serio se marcan `dead` y no se vuelven a elegir como preview.
+- EPG (programa actual) abajo de cada tile.
+
+El **PiP en vivo queda descartado**: no existe en Android TV y el SoC no tiene un segundo decoder.
+Lo que sí queda para P2 es el "surf" con refresco periódico (re-capturar el tile enfocado).
 
 ### Guía EPG (esencial)
 - **Pipeline**: GitHub Action semanal (gratis, cron) que corre las utilidades del repo iptv-org/epg para los canales AR y commitea "epg/ar.xml.gz" al repo; la app lo descarga de raw.githubusercontent al iniciar y cada 24 h, con parser incremental y purge a 7 días. **P0: verificar match de tvg-id ("A24.ar@SD") ↔ ids del XMLTV; fallback por nombre normalizado.**
@@ -221,15 +234,15 @@ kzIPTV/
 | Fase | Duración | Entregable | Criterio de salida |
 |---|---|---|---|
 | **P0 · Spike** | 1 finde | APK mínimo: parse de ar.m3u embebida + grilla + ExoPlayer + zap CH±; corrida local de utilidades EPG | ✅ **cerrado** (probado en la TCL real) |
-| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback y navegación determinista. Falta: Room, refresh con diff, búsqueda, 0-9, EPG fresco |
-| **P2 · Guía y comparación** | 2-3 sem | EPG ahora/siguiente + grilla, mosaico on-device, PiP, celu como control remoto, health check | ⬜ pendiente (el EPG de mi.tv ya da ahora/siguiente) |
+| **P1 · MVP** | 2-3 sem | server embebido + QR + companion de setup, favoritos, categorías, búsqueda, 0-9, banner, refresh con diff, Room, **agrupación de variantes + selector de calidad con fallback** | 🟡 **en curso**: ya están server+QR+companion, favoritos, categorías, banner, agrupación, selector de calidad con fallback, navegación determinista, búsqueda con IME del sistema, 0-9 y **mosaico de comparación**. Falta: Room, refresh con diff, EPG fresco |
+| **P2 · Guía y comparación** | 2-3 sem | grilla completa de EPG, surf del mosaico (re-captura periódica del tile enfocado), celu como control remoto, health check | 🟡 **parcial**: el mosaico de miniaturas ya está (P1) y el companion ya es control remoto. Falta la grilla de EPG y el surf periódico. El PiP se descartó: no existe en Android TV |
 | **P3 · Avanzado** | continuo | sync entre TVs, timeshift/DVR, parental, perfiles, relay off-LAN, PWA del companion | ⬜ pendiente |
 
 ## 11 · Riesgos y fricciones
 
 - **Compose for TV en TVs modestas**: probar P0 en tus modelos exactos (SoC económico + Android 9 puede ir justo; fallback: Views/leanback clásico).
 - **Pipeline EPG de terceros**: iptv-org/epg está activo hoy; si muere, alternativas XMLTV o scrape propio.
-- **Mosaico**: CPU/ancho de banda acotados → solo página visible, calidad baja, 1 job a la vez.
+- **Mosaico**: un solo decoder por hardware → **1 captura a la vez** y sin video simultáneo. El CPU se dispara si se intentan varios streams (medido: 86 % y ANR con 4 players).
 - **Sync entre TVs sin server** (P3): export/import por archivo o relay mínimo de ~50 líneas.
 - **Legal**: kzIPTV es un reproductor genérico; iptv-org indexa streams públicos. Playlists privadas bajo tu responsabilidad.
 - **Distribución**: sideload personal sin fricción; Play Store solo si algún día lo querés público (requiere revisión leanback).

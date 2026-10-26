@@ -1,6 +1,6 @@
 # kzIPTV
 
-Reproductor IPTV para **Android TV**: listas m3u (iptv-org y propias) con **setup por QR** desde el celular, zapping con **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico + PiP**).
+Reproductor IPTV para **Android TV**: listas m3u (iptv-org y propias) con **setup por QR** desde el celular, zapping con **CH+ / CH−**, favoritos, guía **EPG** y comparación de canales (**mosaico de miniaturas**).
 
 - 📖 Diseño y plan completo: [docs/PLAN.md](docs/PLAN.md)
 - 🧪 Estado y aprendizajes: [docs/P0-STATUS.md](docs/P0-STATUS.md)
@@ -33,6 +33,10 @@ kzIPTV/
 - **Número directo**: teclas **0-9** + OK saltan a un canal por número (ej. `12` → Catamarca TV).
 - **Favoritos** (tecla amarilla), **modo zap solo-favoritos** (tecla roja).
 - **EPG** con ahora/siguiente en el banner y en el listado.
+- **Comparar canales** (tecla **MENU** o **INFO**, o el botón *Comparar canales* del celular):
+  grilla de **16 tiles** con un frame congelado de cada canal. Cada tile se reproduce unos
+  segundos, se congela y se sigue con el siguiente, porque la TV tiene **un solo decoder de
+  video por hardware**. Un canal caído muestra su logo y "sin señal" en vez de un cuadro negro.
 - **Salvapantallas**: la pantalla no se apaga durante la reproducción (`FLAG_KEEP_SCREEN_ON`).
 - **Setup por QR**: la TV levanta un server embebido, el celular entra por QR con código de 6
   dígitos y queda emparejado con un token.
@@ -53,8 +57,9 @@ companion usan **exactamente el mismo código**, y el estado del foco es observa
 
 ### Lo que falta (P2 en adelante)
 
-- **Mosaico + PiP** para comparar canales (lo único grande del pedido original).
 - EPG siempre fresco (descarga periódica + cache en disco).
+- PiP real: **Android TV no tiene PiP del sistema** (solo enCelular/tablet). La comparación
+  se resuelve con el mosaico de miniaturas.
 - Room + multi-lista, historial, perfiles.
 - Release firmado + R8 + baseline profile.
 
@@ -87,7 +92,7 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 | Plataforma | Android TV / Google TV (nativa, Kotlin + Compose for TV + Media3) |
 | Sin servidor aparte | la app lleva el server embebido (Ktor) y sirve la web de setup/control por QR |
 | EPG | pipeline semanal gratis: GitHub Action con utilidades iptv-org/epg → XMLTV recortado a la playlist |
-| Comparar canales | mosaico de miniaturas on-device + PiP con 2.º decodificador |
+| Comparar canales | mosaico de miniaturas on-device (16 tiles). **No hay PiP en Android TV** y el decoder de hardware es único: por eso se congela un frame por canal en vez de transmitir varios streams |
 | Foco en TV | navegación determinista en el `TvController` (el foco de Compose no engancha) |
 | Teclado | el del sistema (Gboard TV): sin teclado propio que mantener |
 | Estado de salud por feed | `ok`/`dead`/`slow` con TTL de 6 h + fallback entre variantes |

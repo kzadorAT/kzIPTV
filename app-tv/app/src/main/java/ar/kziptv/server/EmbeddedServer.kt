@@ -238,6 +238,7 @@ class EmbeddedServer(
                     }
                     "category" -> controller.setCategory(command.category)
                     "grid" -> controller.openGrid()
+                    "mosaic" -> controller.openMosaic()
                     else -> Unit
                 }
             } catch (e: Exception) {

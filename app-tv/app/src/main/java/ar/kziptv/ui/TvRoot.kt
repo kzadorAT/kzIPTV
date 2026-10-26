@@ -2,8 +2,10 @@ package ar.kziptv.ui
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.view.TextureView
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import androidx.media3.ui.PlayerView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,15 +15,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.viewinterop.AndroidView
@@ -40,11 +45,14 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
@@ -53,13 +61,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.ui.AspectRatioFrameLayout
-import androidx.media3.ui.PlayerView
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import androidx.tv.material3.darkColorScheme
 import coil.compose.AsyncImage
+import kotlinx.coroutines.delay
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import ar.kziptv.core.model.ChannelGroup
@@ -91,6 +99,7 @@ fun TvRoot(controller: TvController) {
         Screen.GRID -> GridScreen(controller)
         Screen.QUALITY -> QualityScreen(controller)
         Screen.SEARCH -> SearchScreen(controller)
+        Screen.MOSAIC -> MosaicScreen(controller)
     }
 }
 
@@ -837,4 +846,209 @@ fun qrBitmap(data: String, size: Int): Bitmap? = try {
         .apply { setPixels(pixels, 0, width, 0, 0, width, height) }
 } catch (e: Exception) {
     null
+}
+/**
+ * Mosaico: una grilla de canales con un frame congelado de cada uno.
+ *
+ * En Android TV NO existe el PiP del sistema (el feature `picture_in_picture`
+ * no esta en las TVs). Ademas el decoder de video por hardware de la TV es
+ * UNICO: mantener cuatro streams a la vez lleva al 86% de CPU y cuelga la app.
+ *
+ * Asi que cada tile se captura reproduciendo el canal unos segundos: se
+ * congela un frame y se sigue con el siguiente (ver ThumbnailManager). El grid
+ * se va llenando solo mientras el usuario mira, y al mover el foco se captura
+ * ese canal al instante.
+ */
+@Composable
+fun MosaicScreen(controller: TvController) {
+    val channels by controller.mosaicChannels.collectAsState()
+    val focus by controller.mosaicFocus.collectAsState()
+    val errors by controller.mosaicTileErrors.collectAsState()
+    val thumbs by controller.mosaicThumbs.collectAsState()
+    val liveIndex by controller.mosaicLiveIndex.collectAsState()
+    val favorites by controller.favorites.collectAsState()
+    val epg by controller.epg.collectAsState()
+
+    // El "ahora" del EPG se refresca cada medio minuto: si no, el programa que
+    // se muestra queda desactualizado mientras el usuario mira el mosaico.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000)
+            now = System.currentTimeMillis()
+        }
+    }
+
+    val columns = TvController.MOSAIC_COLUMNS
+
+    Column(Modifier.fillMaxSize().background(KzBg).padding(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(text = "Comparar canales", color = KzBlue, fontSize = 24.sp)
+            Text(
+                text = "   ${thumbs.size}/${channels.size} capturados" +
+                    if (errors.isNotEmpty()) " · ${errors.size} sin señal" else "",
+                color = Color(0xFF7C8899),
+                fontSize = 13.sp
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // El alto disponible se reparte entre las filas: el mosaico nunca se
+        // corta, por mas canales o programas que haya.
+        Column(
+            Modifier.fillMaxWidth().weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            channels.chunked(columns).forEachIndexed { rowIndex, row ->
+                Row(
+                    Modifier.fillMaxWidth().weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    row.forEachIndexed { colIndex, group ->
+                        val index = rowIndex * columns + colIndex
+                        val program = epg.nowNextByTvgId(group.tvgId, now).first
+                        MosaicTile(
+                            controller = controller,
+                            group = group,
+                            index = index,
+                            focused = index == focus,
+                            live = index == liveIndex,
+                            thumb = thumbs[index],
+                            error = errors[index],
+                            favorite = favorites.contains(group.id) ||
+                                group.variants.any { favorites.contains(it.channelId) },
+                            programTitle = program?.title.orEmpty(),
+                            modifier = Modifier.fillMaxHeight().weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "OK ver en pantalla completa \u00b7 BACK volver \u00b7 cada canal se captura por unos segundos",
+            color = Color(0xFF56616F),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 6.dp)
+        )
+    }
+}
+
+/** Un tile del mosaico: el frame congelado (o el video mientras se captura). */
+@Composable
+private fun MosaicTile(
+    controller: TvController,
+    group: ChannelGroup,
+    index: Int,
+    focused: Boolean,
+    live: Boolean,
+    thumb: Bitmap?,
+    error: String?,
+    favorite: Boolean,
+    programTitle: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF12171E))
+            .border(
+                width = if (focused) 3.dp else 1.dp,
+                color = if (focused) KzBlue else Color(0xFF232C38),
+                shape = RoundedCornerShape(8.dp)
+            )
+    ) {
+        if (thumb != null) {
+            // El frame congelado del canal.
+            Image(
+                bitmap = thumb.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            // Todavia no se capturo: el logo del canal de fondo.
+            Box(
+                Modifier.fillMaxSize().background(Color(0xFF0D1218)),
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = group.logo,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.size(56.dp),
+                    alpha = 0.4f
+                )
+            }
+        }
+
+        // Mientras se captura, el video real (UN solo a la vez: el decoder de
+        // hardware de la TV no da para mas).
+        if (live) {
+            key(index) {
+                AndroidView(
+                    factory = { ctx ->
+                        val textureView = TextureView(ctx)
+                        controller.mosaic.attach(textureView)
+                        textureView
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                    onRelease = { controller.mosaic.detach(it) }
+                )
+            }
+        }
+
+        // Scrim para que el texto se lea sobre cualquier imagen.
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color.Transparent,
+                            Color.Transparent,
+                            Color(0xCC000000)
+                        ),
+                        startY = 0f,
+                        endY = Float.POSITIVE_INFINITY
+                    )
+                )
+        )
+
+        // Numero + nombre, arriba a la izquierda.
+        Column(Modifier.align(Alignment.TopStart).padding(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "#${group.number}",
+                    color = if (focused) KzBlue else Color(0xFF9FB0C3),
+                    fontSize = 12.sp
+                )
+                if (favorite) {
+                    Text(text = "  *", color = KzBlue, fontSize = 11.sp)
+                }
+            }
+            Text(
+                text = group.name,
+                color = Color.White,
+                fontSize = 13.sp,
+                maxLines = 1,
+                modifier = Modifier.padding(top = 1.dp)
+            )
+        }
+
+        // Abajo: el programa actual (EPG) o el error.
+        Column(Modifier.align(Alignment.BottomStart).padding(8.dp)) {
+            if (error != null && thumb == null) {
+                Text(text = "sin senal", color = Color(0xFFF59E0B), fontSize = 11.sp)
+            } else if (programTitle.isNotBlank()) {
+                Text(
+                    text = programTitle,
+                    color = Color(0xFFE2E8F0),
+                    fontSize = 11.sp,
+                    maxLines = 1
+                )
+            }
+        }
+    }
 }

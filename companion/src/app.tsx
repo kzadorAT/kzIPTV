@@ -280,6 +280,7 @@ export function App() {
             <button onClick={() => key(KEY.YELLOW)}>★ Favorito</button>
             <button onClick={() => key(KEY.RED)}>Zap favoritos</button>
             <button onClick={() => send({ type: "quality" })}>Calidad</button>
+            <button onClick={() => send({ type: "mosaic" })}>Comparar canales</button>
             <button onClick={() => key(KEY.BLUE)}>Emparejar / QR</button>
             <button onClick={() => key(KEY.BACK)}>Volver</button>
             <button onClick={() => key(KEY.MENU)}>Menu / QR</button>

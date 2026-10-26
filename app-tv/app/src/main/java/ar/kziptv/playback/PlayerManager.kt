@@ -89,6 +89,18 @@ class PlayerManager(context: Context) {
         exo.playWhenReady = true
     }
 
+    /**
+     * Suelta el decoder de video sin perder la playlist.
+     *
+     * En una TV hay 1 o 2 decodificadores por hardware: si el player principal
+     * sigue sosteniendo uno, los players del mosaico no pueden ni inicializar.
+     * `stop()` libera el codec (a diferencia de `pause()`, que lo conserva).
+     */
+    fun suspendVideo() {
+        exo.stop()
+        exo.clearVideoSurface()
+    }
+
     fun release() {
         exo.release()
     }
