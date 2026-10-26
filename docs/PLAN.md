@@ -372,12 +372,23 @@ el plan no se vuelve a discutir; lo nuevo o lo que está roto queda anotado con 
 
 | # | Lo que se reporta | Estado | Dónde está contemplado | Próximo paso |
 |---|---|---|---|---|
-| 1 | En la grilla, al seguir bajando la pantalla queda estática | **Bug** | nadie: al `LazyVerticalGrid` de `TvRoot.kt` nunca se le pasa `state = gridState`, así que el `scrollToItem` del `LaunchedEffect` escribe en un estado que no es el de la grilla | fix de 1 línea + prueba en la TV (**lo primero**) |
+| 1 | En la grilla, al seguir bajando la pantalla queda estática | **Bug — arreglado** | nadie: al `LazyVerticalGrid` de `TvRoot.kt` nunca se le pasa `state = gridState`, así que el `scrollToItem` del `LaunchedEffect` escribe en un estado que no es el de la grilla | **Hecho (26/10):** `state = gridState` + scroll "lo justo" (el paso de fila se calcula con los items visibles). Verificado en la TV (`5de8a5f`) |
 | 2 | Guía lineal tipo "ir pasando canales" con el canal actual visible arriba, también en modo grilla | **Nuevo** | la grilla EPG completa ya estaba como P2; la versión lineal no | diseñar el ticker horizontal (P2); se puede construir con el EPG bundled actual (2.474 programas) |
 | 3 | Cambiar audio, activar subtítulos, cambiar resolución | **Parcial** | §8 ("Pistas: audio/subtítulos del stream cuando existen"); la resolución ya existe (selector de calidad + `variant_states.measuredResolution`) | **medido el 26/10**: de 24 streams muestreados, **0** declaran `EXT-X-MEDIA:TYPE=AUDIO` y **0** subtítulos; el M3U solo trae `tvg-id`, `tvg-logo` y `group-title`. Con esta lista el selector de audio/subtítulos no tiene nada que ofrecer → implementarlo solo cuando el usuario cargue una playlist multi-audio |
-| 4 | Menú de configuraciones generales | **Contemplado** | §3 y §8 (server apagable, aspecto, pistas, PIN) | pantalla AJUSTES: hoy MENU abre SETUP (QR) y no hay más pantallas |
-| 5 | El server web debería estar apagado salvo que se pida | **Contemplado** | §3 ("server apagable desde Ajustes", "QR regenerable") | toggle en Ajustes + acceso rápido con QR; hoy el server arranca siempre en `MainActivity` |
-| 6 | El cartel "201 canales · 2474 programas EPG" queda pegado en pantalla | **No es debug** | es el `status` persistente del reproductor (`TvRoot.kt`), que mezcla avisos útiles con la línea de arranque | conteos solo al log (`KzStartup` ya los tiene) y los avisos como cartel transitorio (~3,5 s) con recuadro redondeado |
+| 4 | Menú de configuraciones generales | **Contemplado — hecho** | §3 y §8 (server apagable, aspecto, pistas, PIN) | **Hecho (26/10):** pantalla AJUSTES con 4 filas (Servidor web / Emparejar el celular / Zap / Video), tecla **AZUL** (`f17ae64`). Falta (§8) lo demás: aspecto, PIN, selector de lista |
+| 5 | El server web debería estar apagado salvo que se pida | **Contemplado — hecho** | §3 ("server apagable desde Ajustes", "QR regenerable") | **Hecho (26/10):** el server no arranca solo; se enciende/apaga desde Ajustes (o con OK en el emparejamiento, que muestra el QR). Es **runtime**: al salir de la app vuelve a apagarse → falta decidir si se persiste un "dejarlo siempre encendido" |
+| 6 | El cartel "201 canales · 2474 programas EPG" queda pegado en pantalla | **No es debug — hecho** | es el `status` persistente del reproductor (`TvRoot.kt`), que mezcla avisos útiles con la línea de arranque | **Hecho (26/10):** `setStatus(text, sticky)` con auto-ocultamiento a los 3,5 s y recuadro redondeado; los errores (`sticky`) quedan fijos (`5de8a5f`) |
+
+**Estado al 26/10/2026 (tarde)**: 4 de los 6 puntos quedaron implementados y verificados en la
+TV real (TCL Smart TV Pro, `ar.kziptv.debug`):
+
+| Commit | Qué entró |
+|---|---|
+| `5de8a5f` | La grilla acompaña al foco (`state = gridState` + scroll "lo justo") y el cartel de estado se va solo a los 3,5 s con recuadro |
+| `f17ae64` | Pantalla AJUSTES (tecla **AZUL**): server web apagable, QR de emparejamiento, modo de zap y encuadre del video (Ajustar / Rellenar / Ampliar) |
+
+Sigue pendiente: la **guía lineal de EPG** (P2) y el **selector de audio/subtítulos** (solo tiene
+sentido con una playlist multi-audio: de 24 streams medidos, 0 pistas de audio y 0 subtítulos).
 
 **Reglas para esta lista**:
 

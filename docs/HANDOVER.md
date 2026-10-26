@@ -266,7 +266,7 @@ $adb='C:\Users\fabri\AppData\Local\Android\Sdk\platform-tools\adb.exe'
 | Tecla | Code | Accion |
 |---|---|---|
 | CH+ / CH- | 166 / 167 | zapping |
-| ROJA / VERDE / AMARILLA / AZUL | 183 / 184 / 185 / 186 | zap favoritos / buscar / favorito / QR-setup |
+| ROJA / VERDE / AMARILLA / AZUL | 183 / 184 / 185 / 186 | zap favoritos / buscar / favorito / **AJUSTES** (el QR sale de Ajustes) |
 | MENU / INFO | 82 / 172 | **mosaico** (comparar canales) |
 | OK | 23 | reproducir (largo >600 ms = selector de calidad) |
 | BACK | 4 | un paso atras; **doble en la grilla = salir** |
@@ -320,9 +320,9 @@ Como trabajar alrededor:
 1. ~~**Room** en vez del store JSON (multi-lista, historial, EPG cacheado).~~ **Hecho (26/10/2026):**
    esquema v3 con migraciones 1→2→3, import del JSON legado con backup, cache EPG (2.474
    programas) e historial de reproducción. Ver seccion 2.1. Falta solo el selector de lista en la UI.
-2. **Arreglar el scroll de la grilla** (bug reportado el 26/10/2026): al seguir bajando, el foco
-   sale de la pantalla y la grilla no acompaña. Causa: al `LazyVerticalGrid` no se le pasa
-   `state = gridState`. Es un fix de una linea + prueba en la TV.
+2. ~~**Arreglar el scroll de la grilla**~~ **Hecho (26/10/2026):** el `LazyVerticalGrid` ahora
+   recibe `state = gridState` y el scroll desplaza lo justo (calcula el paso de fila con los items
+   visibles). Verificado en la TV: el foco ya no se sale de la pantalla. Commit `5de8a5f`.
 3. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
 4. **EPG fresco**: la app baja `epg/ar.xml.gz` del repo (raw.githubusercontent) + cache en disco,
    parseo incremental (hoy parsea 2 MB en cada arranque: ~7 s de CPU).
@@ -335,14 +335,18 @@ Como trabajar alrededor:
 
 | Qué se reporta | Estado | Dónde | Qué hacer |
 |---|---|---|---|
-| Grid: al seguir bajando la pantalla queda estática | **Bug** | `TvRoot.kt`: al `LazyVerticalGrid` no se le pasa `state = gridState` | fix de 1 línea + prueba en TV (item 2 de P1) |
+| Grid: al seguir bajando la pantalla queda estática | **Bug — hecho** | `TvRoot.kt`: al `LazyVerticalGrid` no se le pasa `state = gridState` | **Hecho (26/10):** `state = gridState` + scroll "lo justo"; verificado en la TV (`5de8a5f`) |
 | Guía lineal de EPG (canal actual visible arriba, también en grilla) | **Nuevo** | la grilla EPG completa ya estaba en P2; la versión lineal no | diseñar el ticker horizontal (P2); se puede construir con el EPG bundled actual |
 | Cambiar audio / subtítulos / resolución | **Parcial** | PLAN §8; la resolución ya existe (selector de calidad) | medido: 0 pistas de audio y 0 subtítulos en los streams actuales → solo cuando haya playlist multi-audio |
-| Menú de configuraciones generales | **Contemplado** | PLAN §3 y §8 | pantalla AJUSTES (hoy MENU abre SETUP/QR) |
-| El server web debería estar apagado salvo que se pida | **Contemplado** | PLAN §3 ("server apagable desde Ajustes") | toggle en Ajustes + QR; hoy arranca siempre |
-| El cartel "201 canales · 2474 programas EPG" queda pegado | **No es debug** | es el `status` persistente del reproductor (`TvRoot.kt`) | conteos solo al log; avisos como cartel transitorio con recuadro (P1, barato) |
+| Menú de configuraciones generales | **Contemplado — hecho** | PLAN §3 y §8 | **Hecho (26/10):** pantalla AJUSTES con 4 filas (Servidor web / Emparejar el celular / Zap / Video), tecla AZUL (`f17ae64`) |
+| El server web debería estar apagado salvo que se pida | **Contemplado — hecho** | PLAN §3 ("server apagable desde Ajustes") | **Hecho (26/10):** el server ya no arranca solo; se enciende/apaga desde Ajustes (o con OK en el emparejamiento). Es runtime: al salir de la app vuelve a apagarse |
+| El cartel "201 canales · 2474 programas EPG" queda pegado | **No es debug — hecho** | es el `status` persistente del reproductor (`TvRoot.kt`) | **Hecho (26/10):** `setStatus(text, sticky)` con auto-ocultamiento a los 3,5 s y recuadro redondeado; los errores quedan fijos (`5de8a5f`) |
 
 Detalle y reglas de esta lista en `docs/PLAN.md` §15.
+
+Lo que queda **pendiente** de esta lista: la guía lineal de EPG (P2) y el selector de audio/subtítulos
+(solo tiene sentido con una playlist multi-audio: 0 pistas medidas en 24 streams). El encuadre del
+video (Ajustar/Rellenar/Ampliar) y el estado del server son **runtime**: se pierden al salir de la app.
 
 ### P2
 
@@ -373,6 +377,9 @@ Detalle y reglas de esta lista en `docs/PLAN.md` §15.
 ## 11 - Historial de commits (para ubicarse)
 
 ```
+f17ae64 feat(p1): pantalla de ajustes con server web apagable
+5de8a5f fix(p1): la grilla acompana al foco y el cartel de estado se va solo
+59962ff docs(p1): triar las observaciones de UX y anotarlas en el backlog
 2b2d775 test(p1): cubrir la migracion a Room y el cache EPG
 3cb838a feat(p1): migrar la persistencia a Room
 989fe6a fix(p1): terminar el proceso al salir con BACK doble
@@ -388,5 +395,6 @@ b7ec21e fix(p0): ANR del parser EPG, hilo del player, auth por token y setup en 
 ```
 
 Al corte, **todo comiteado y verificado en la TV**: la salida por BACK doble, el BACK del
-celular reinyectado como tecla real, la terminacion real del proceso y la migracion de la
-persistencia a Room (esquema v3, con cache EPG e historial).
+celular reinyectado como tecla real, la terminacion real del proceso, la migracion de la
+persistencia a Room (esquema v3, con cache EPG e historial), el scroll de la grilla, el cartel
+de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encuadre del video).

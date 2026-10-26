@@ -184,18 +184,19 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
 
 | Lo que se reporta | Estado | Próximo paso |
 |---|---|---|
-| En la grilla, al seguir bajando la pantalla queda estática | **bug**: el `LazyVerticalGrid` no recibe `state = gridState` | fix de 1 línea + prueba en la TV |
+| En la grilla, al seguir bajando la pantalla queda estática | **bug — arreglado**: el `LazyVerticalGrid` no recibía `state = gridState` | **hecho (26/10):** `state = gridState` + scroll "lo justo"; verificado en la TV (`5de8a5f`) |
 | Guía lineal de EPG con el canal actual visible (también en grilla) | **nuevo** (la grilla EPG completa ya estaba en P2) | diseñar el ticker horizontal (P2) |
 | Cambiar audio / subtítulos / resolución | **parcial**: la resolución ya existe (selector de calidad) y los streams actuales no traen pistas alternas (0 de 24 medidos) | implementarlo solo cuando el usuario cargue una playlist multi-audio |
-| Menú de configuraciones generales | **contemplado** en el plan (§3, §8) | pantalla AJUSTES |
-| Server web siempre prendido | **contemplado** en el plan (§3) | toggle en Ajustes + acceso con QR |
-| Cartel "201 canales · 2474 programas EPG" pegado en pantalla | **no es debug**: es el `status` persistente | conteos solo al log + cartel transitorio con recuadro |
+| Menú de configuraciones generales | **contemplado** en el plan (§3, §8) | **hecho (26/10):** pantalla AJUSTES con 4 filas, tecla AZUL (`f17ae64`) |
+| Server web siempre prendido | **contemplado** en el plan (§3) | **hecho (26/10):** el server no arranca solo; toggle en Ajustes + QR desde el emparejamiento (runtime: se apaga al salir de la app) |
+| Cartel "201 canales · 2474 programas EPG" pegado en pantalla | **no es debug**: es el `status` persistente | **hecho (26/10):** `setStatus(sticky)` + cartel transitorio con recuadro que se va solo a los 3,5 s (`5de8a5f`) |
 
 **Qué probar en 5 minutos**
 
 1. La TV arranca en el reproductor (la playlist viene embebida).
 2. `CH+` / `CH-` cambian de canal (zapping), el banner aparece 4 s con logo + "Ahora/Luego".
-3. `MENU` o tecla **AZUL** → pantalla de setup con **QR** y código de 6 dígitos.
+3. Tecla **AZUL** → pantalla **AJUSTES** (Servidor web / Emparejar el celular / Zap / Video);
+   desde ahí, "Emparejar el celular" → setup con **QR** y código de 6 dígitos.
 4. Celular: escanear el QR → web del companion → *Configurar* → pegar la URL de la m3u → *Enviar*.
 5. La TV cambia la lista al instante (se ve en la grilla).
 6. Tecla **ROJA** → zapping solo por favoritos; tecla **AMARILLA** → marca/desmarca favorito.
@@ -215,8 +216,8 @@ adb install -r app-tv/app/build/outputs/apk/debug/app-debug.apk
    falta la descarga en background con parseo incremental.
 4. **Room + multi-lista**: playlists propias, guardado de EPG, historial. → **Room hecho en P1**
    (esquema v3, import del JSON legado, cache EPG e historial); falta el selector de lista en la TV.
-5. **UX y ajustes** (observaciones del 26/10/2026, §5.2): scroll de la grilla, menú de Ajustes,
-   server apagable y cartel de estado transitorio.
+5. ~~**UX y ajustes** (observaciones del 26/10/2026, §5.2)~~ **Hecho:** scroll de la grilla,
+   menú de Ajustes, server apagable y cartel de estado transitorio (ver §12).
 6. **Favoritos y perfiles por usuario**, cola de reproducción, "ver después".
 7. **EPG de canales locales**: buscar una fuente alternativa por zona (el scraper de cada signal provider).
 8. Release firmado + distribución (sideload por QR / Play private track).
@@ -602,7 +603,38 @@ PLAYER (la app arranca aqui: retoma el ultimo canal)
 
 ---
 
-## 12 · Trampa de trabajo: las capturas por ADB cortan la conexión
+## 12 · UX: la grilla, el cartel de estado y la pantalla de AJUSTES
+
+### Qué se implementó (26/10/2026)
+
+| Pieza | Qué hace |
+|---|---|
+| `TvRoot.kt`: `LazyVerticalGrid(state = gridState)` + `LaunchedEffect` que desplaza "lo justo" | la grilla acompaña al foco: si el destino ya está compuesto alcanza con `scrollBy`; si no, calcula el paso de fila con los items visibles y salta las filas que falten |
+| `TvController.setStatus(text, sticky = false)` + `statusVisible` | los avisos normales se van solos a los 3,5 s; los errores (`sticky = true`) quedan hasta que llegue otro mensaje |
+| `TvRoot.kt`: cartel con recuadro redondeado | el `status` ya no queda pegado: se ve como caja oscura arriba a la izquierda |
+| `TvController.startWebServer()` / `stopWebServer()` | el server web **no arranca solo**: se enciende desde AJUSTES o con OK en el emparejamiento (que es lo que muestra el QR) |
+| `TvController.openSettings()` + `Screen.SETTINGS` + `Setting` | pantalla AJUSTES con 4 filas: Servidor web (Encendido/Apagado), Emparejar el celular (QR), Zap (todos/favoritos), Video (Ajustar/Rellenar/Ampliar) |
+| `MainActivity`: AZUL (186) | abre AJUSTES (antes abría el setup con QR) |
+| `TvController.setupBackScreen` | BACK desde el emparejamiento vuelve a AJUSTES (antes saltaba a la grilla) |
+
+El encuadre se aplica en el `PlayerView` con el `resizeMode` de Media3 (FIT, FILL o ZOOM). El
+estado del server y el encuadre son **runtime**: se pierden al salir de la app.
+
+### Verificado en la TV real (26/10/2026)
+
+- ✅ Al abrir la app el server está **apagado** (la conexión a `192.168.1.18:8080` se rechaza).
+- ✅ AZUL → AJUSTES; "Servidor web" pasa de Apagado a Encendido y muestra la URL.
+- ✅ "Emparejar el celular" → setup con QR; con el server apagado avisa "Presiona OK para
+  encenderlo" y lo enciende.
+- ✅ BACK desde el emparejamiento vuelve a AJUSTES; BACK desde AJUSTES vuelve a la pantalla de la
+  que se salió (el reproductor).
+- ✅ "Video" cicla Ajustar → Rellenar → Ampliar y el video se ve con el nuevo encuadre.
+- ✅ Suite JVM **76 tests verdes** (`testDebugUnitTest`) + **5 tests instrumentados** de Room
+  verdes en la TV (`am instrument`).
+
+---
+
+## 13 · Trampa de trabajo: las capturas por ADB cortan la conexión
 
 `adb exec-out screencap` (o un `adb pull` grande) por ADB sobre WiFi deja la conexión colgada y
 la sesión se frena; la TV puede quedar sin responder a `adb connect` aunque la app esté
