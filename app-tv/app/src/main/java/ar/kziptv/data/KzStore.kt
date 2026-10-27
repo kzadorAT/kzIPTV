@@ -29,8 +29,10 @@ data class PersistedSource(
     val url: String = "",
     val bundled: Boolean = false,
     val channelCount: Int = 0,
-    /** Contenido M3U opcional para playlists subidas por el companion. */
+    /** Contenido M3U cacheado para playlists subidas o descargadas. */
     val content: String = "",
+    /** Ultima descarga exitosa de esta playlist (epoch ms). */
+    val lastRefreshAt: Long = 0
 )
 
 /**
@@ -49,6 +51,8 @@ data class PersistedState(
     val qualityPreference: Map<String, String> = emptyMap(),
     val variantStatus: Map<String, String> = emptyMap(),
     val measuredResolution: Map<String, String> = emptyMap(),
+    /** Numeros de canal estables, indexados por la clave canonica del canal. */
+    val channelNumbers: Map<String, Int> = emptyMap(),
     /** URL de la guia EPG remota (vacio = se usa la guia embebida). */
     val epgUrl: String = "",
 )
@@ -283,6 +287,7 @@ class KzStore(
             settings = dao.getAppSettings(),
             qualityPreferences = dao.getQualityPreferences(),
             variantStates = dao.getVariantStates(),
+            channelNumbers = dao.getChannelNumbers(),
         )
     }
 
@@ -309,6 +314,10 @@ class KzStore(
             dao.deleteVariantStates()
             val variants = RoomStateMapper.variantStates(state)
             if (variants.isNotEmpty()) dao.upsertVariantStates(variants)
+
+            dao.deleteChannelNumbers()
+            val numbers = RoomStateMapper.channelNumbers(state)
+            if (numbers.isNotEmpty()) dao.upsertChannelNumbers(numbers)
         }
     }
 
@@ -344,6 +353,11 @@ class KzStore(
                 dao.deleteVariantStates()
                 val rows = RoomStateMapper.variantStates(new)
                 if (rows.isNotEmpty()) dao.upsertVariantStates(rows)
+            }
+            if (old.channelNumbers != new.channelNumbers) {
+                dao.deleteChannelNumbers()
+                val rows = RoomStateMapper.channelNumbers(new)
+                if (rows.isNotEmpty()) dao.upsertChannelNumbers(rows)
             }
         }
     }

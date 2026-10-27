@@ -19,8 +19,8 @@ class KzDatabaseMigrationTest {
     )
 
     @Test
-    fun migraV1AV4SinPerderDatos() {
-        val dbName = "migration-room-v1-v4"
+    fun migraV1AV5SinPerderDatos() {
+        val dbName = "migration-room-v1-v5"
         helper.createDatabase(dbName, 1).apply {
             execSQL(
                 "INSERT INTO playlists " +
@@ -40,11 +40,12 @@ class KzDatabaseMigrationTest {
 
         val migrated = helper.runMigrationsAndValidate(
             dbName,
-            4,
+            5,
             true,
             KzDatabase.MIGRATION_1_2,
             KzDatabase.MIGRATION_2_3,
             KzDatabase.MIGRATION_3_4,
+            KzDatabase.MIGRATION_4_5,
         )
 
         migrated.query("SELECT content FROM playlists WHERE id='bundled-ar'").use { cursor ->
@@ -59,6 +60,18 @@ class KzDatabaseMigrationTest {
         migrated.query("SELECT epgUrl FROM app_settings WHERE id=1").use { cursor ->
             assertTrue(cursor.moveToFirst())
             assertEquals("", cursor.getString(0))
+        }
+        // El esquema 5 suma la marca de refresh y la tabla de numeros de canal.
+        migrated.query("SELECT lastRefreshAt FROM playlists WHERE id='bundled-ar'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(0L, cursor.getLong(0))
+        }
+        migrated.execSQL(
+            "INSERT INTO channel_numbers (channelKey,number) VALUES ('c:tvg:canal.ar',7)",
+        )
+        migrated.query("SELECT number FROM channel_numbers WHERE channelKey='c:tvg:canal.ar'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(7, cursor.getInt(0))
         }
         migrated.execSQL(
             "INSERT INTO watch_history " +

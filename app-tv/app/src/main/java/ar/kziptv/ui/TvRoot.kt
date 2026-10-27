@@ -124,7 +124,6 @@ fun PlayerScreen(controller: TvController) {
     val current by controller.currentGroup.collectAsState()
     val variant by controller.currentVariant.collectAsState()
     val banner by controller.bannerVisible.collectAsState()
-    val favorites by controller.favorites.collectAsState()
     val status by controller.status.collectAsState()
     val statusVisible by controller.statusVisible.collectAsState()
     val playbackState by controller.playbackState.collectAsState()
@@ -167,8 +166,7 @@ fun PlayerScreen(controller: TvController) {
             BannerOverlay(
                 group = current!!,
                 variant = variant,
-                favorite = favorites.contains(current!!.id) ||
-                    current!!.variants.any { favorites.contains(it.channelId) },
+                favorite = controller.isFavorite(current!!),
                 controller = controller
             )
         }
@@ -267,7 +265,6 @@ private fun BannerOverlay(
 fun GridScreen(controller: TvController) {
     val catalog by controller.catalog.collectAsState()
     val selectedCategory by controller.category.collectAsState()
-    val favorites by controller.favorites.collectAsState()
     val current by controller.currentGroup.collectAsState()
     val focusedId by controller.focusedGroupId.collectAsState()
     val videoWidth by controller.videoWidth.collectAsState()
@@ -389,8 +386,7 @@ fun GridScreen(controller: TvController) {
                     }
                     ChannelCard(
                         group = group,
-                        favorite = favorites.contains(group.id) ||
-                            group.variants.any { favorites.contains(it.channelId) },
+                        favorite = controller.isFavorite(group),
                         active = current?.id == group.id,
                         focused = focusedId == group.id && focusedCategory == null,
                         measuredQuality = measured,
@@ -446,7 +442,6 @@ fun SearchScreen(controller: TvController) {
     val query by controller.query.collectAsState()
     val results by controller.searchResults.collectAsState()
     val focusedId by controller.focusedSearchId.collectAsState()
-    val favorites by controller.favorites.collectAsState()
     val fieldRequest by controller.searchFieldRequest.collectAsState()
     val fieldFocused by controller.searchFieldFocused.collectAsState()
     val resultState = rememberLazyListState()
@@ -586,8 +581,7 @@ fun SearchScreen(controller: TvController) {
                 val group = results[index]
                 SearchResultRow(
                     group = group,
-                    favorite = favorites.contains(group.id) ||
-                        group.variants.any { favorites.contains(it.channelId) },
+                    favorite = controller.isFavorite(group),
                     focused = focusedId == group.id,
                     onClick = { controller.play(group) }
                 )
@@ -935,7 +929,6 @@ fun MosaicScreen(controller: TvController) {
     val errors by controller.mosaicTileErrors.collectAsState()
     val thumbs by controller.mosaicThumbs.collectAsState()
     val liveIndex by controller.mosaicLiveIndex.collectAsState()
-    val favorites by controller.favorites.collectAsState()
     val epg by controller.epg.collectAsState()
 
     // El "ahora" del EPG se refresca cada medio minuto: si no, el programa que
@@ -997,8 +990,7 @@ fun MosaicScreen(controller: TvController) {
                             live = index == liveIndex,
                             thumb = thumbs[index],
                             error = errors[index],
-                            favorite = favorites.contains(group.id) ||
-                                group.variants.any { favorites.contains(it.channelId) },
+                            favorite = controller.isFavorite(group),
                             programTitle = program?.title.orEmpty(),
                             modifier = Modifier.fillMaxHeight().weight(1f)
                         )
@@ -1171,63 +1163,85 @@ fun SettingsScreen(controller: TvController) {
     val epg by controller.epg.collectAsState()
     val epgRefreshing by controller.epgRefreshing.collectAsState()
     val epgSource by controller.epgSource.collectAsState()
+    val playlistRefreshing by controller.playlistRefreshing.collectAsState()
+    val status by controller.status.collectAsState()
 
     val serverLabel = when {
         busy -> "Encendiendo\u2026"
         running -> "Encendido"
         else -> "Apagado"
     }
-    val rows = listOf(
-        "Servidor web" to serverLabel,
-        "Emparejar el celular" to "QR",
-        "Zap" to (if (zapOnly) "Solo favoritos" else "Todos los canales"),
-        "Video" to controller.videoFitLabel(fitMode),
-        "Guia EPG" to controller.epgLabel()
-    )
+    // Se construye desde el enum para que el foco del controller y las filas
+    // conserven siempre el mismo orden.
+    val rows = Setting.entries.map { setting ->
+        setting to when (setting) {
+            Setting.SERVER -> serverLabel
+            Setting.PAIRING -> "QR"
+            Setting.ZAP -> (if (zapOnly) "Solo favoritos" else "Todos los canales")
+            Setting.VIDEO -> controller.videoFitLabel(fitMode)
+            Setting.EPG -> controller.epgLabel()
+            Setting.PLAYLIST -> (if (playlistRefreshing) "Actualizando\u2026" else "Actualizar")
+        }
+    }
 
-    // Con 5 filas (servidor, emparejamiento, zap, video, guia EPG) el padding
-    // chico es lo que hace que todo entre en la pantalla de la TV (540 dp de alto).
+    // Seis filas + informacion: el padding compacto hace que todo entre en
+    // una pantalla de TV de 540 dp de alto.
     Column(
-        Modifier.fillMaxSize().background(KzBg).padding(32.dp)
+        Modifier.fillMaxSize().background(KzBg).padding(horizontal = 24.dp, vertical = 18.dp)
     ) {
-        Text(text = "Ajustes", color = Color.White, fontSize = 32.sp)
-        Spacer(Modifier.height(6.dp))
+        Text(text = "Ajustes", color = Color.White, fontSize = 28.sp)
+        Spacer(Modifier.height(4.dp))
         Text(
             text = "OK para cambiar \u00b7 BACK para volver",
             color = Color(0xFF56616F),
-            fontSize = 14.sp
+            fontSize = 13.sp
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(10.dp))
 
         rows.forEachIndexed { index, row ->
             val selected = index == focus
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(if (selected) Color(0xFF1B3A5C) else KzCard)
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                    .padding(horizontal = 18.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = row.first,
+                    text = when (row.first) {
+                        Setting.SERVER -> "Servidor web"
+                        Setting.PAIRING -> "Emparejar el celular"
+                        Setting.ZAP -> "Zap"
+                        Setting.VIDEO -> "Video"
+                        Setting.EPG -> "Guia EPG"
+                        Setting.PLAYLIST -> "Actualizar playlist"
+                    },
                     color = if (selected) KzBlue else Color.White,
-                    fontSize = 19.sp,
+                    fontSize = 17.sp,
                     modifier = Modifier.weight(1f)
                 )
-                Text(text = row.second, color = Color(0xFF9FB0C3), fontSize = 17.sp)
+                Text(text = row.second, color = Color(0xFF9FB0C3), fontSize = 15.sp)
             }
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(5.dp))
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(7.dp))
         Text(
             text = "Canales: ${catalog.groups.size} \u00b7 Programas EPG: ${epg.programs.size}" +
                 "\nServidor: " + (if (serverUrl.isNotBlank()) serverUrl else "apagado") +
-                "\nGuia: " + epgSource + (if (epgRefreshing) " (actualizando)" else ""),
+                "\nGuia: " + epgSource + (if (epgRefreshing) " (actualizando)" else "") +
+                if (playlistRefreshing) "\nPlaylist: actualizando\u2026" else "",
             color = Color(0xFF56616F),
-            fontSize = 14.sp
+            fontSize = 13.sp
         )
+        if (!playlistRefreshing && status.isNotBlank()) {
+            Text(
+                text = status,
+                color = Color(0xFF9FB0C3),
+                fontSize = 13.sp
+            )
+        }
     }
 }
 

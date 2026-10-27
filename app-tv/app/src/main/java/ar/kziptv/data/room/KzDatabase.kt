@@ -10,6 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 @Database(
     entities = [
         PlaylistEntity::class,
+        ChannelNumberEntity::class,
         FavoriteEntity::class,
         DeviceTokenEntity::class,
         AppSettingsEntity::class,
@@ -19,7 +20,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         EpgCacheMetaEntity::class,
         WatchHistoryEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class KzDatabase : RoomDatabase() {
@@ -102,11 +103,26 @@ abstract class KzDatabase : RoomDatabase() {
             }
         }
 
+        /** Refresh de playlists y numeros estables de canal (esquema 5). */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `playlists` ADD COLUMN `lastRefreshAt` INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `channel_numbers` (" +
+                        "`channelKey` TEXT NOT NULL, " +
+                        "`number` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`channelKey`))",
+                )
+            }
+        }
+
         fun create(context: Context): KzDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
                 KzDatabase::class.java,
                 "kz.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }

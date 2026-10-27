@@ -3,6 +3,7 @@ package ar.kziptv.server
 import android.content.Context
 import android.util.Log
 import ar.kziptv.data.KzStore
+import ar.kziptv.ui.PlaylistRefreshResult
 import ar.kziptv.ui.StateDto
 import ar.kziptv.ui.TvController
 import io.ktor.http.ContentType
@@ -33,6 +34,7 @@ import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 @Serializable
 data class PairRequest(val code: String = "")
@@ -45,6 +47,9 @@ data class FavoriteRequest(val channelId: String = "", val enabled: Boolean? = n
 
 @Serializable
 data class EpgRequest(val url: String = "", val token: String? = null)
+
+@Serializable
+data class RefreshRequest(val token: String? = null)
 
 @Serializable
 data class EpgResponse(
@@ -80,6 +85,9 @@ class EmbeddedServer(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private var running: EmbeddedServer<*, *>? = null
+
+    /** Evita que dos requests HTTP.compitan por la misma actualizacion. */
+    private val refreshInFlight = AtomicBoolean(false)
 
     fun start(): Int {
         for (port in 8080..8090) {
@@ -167,6 +175,54 @@ class EmbeddedServer(
                 )
             }
 
+            post("/api/refresh") {
+                val request = call.receive<RefreshRequest>()
+                if (!validToken(request.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
+
+                // El StateFlow del controller es la fuente de verdad para el UI.
+                // El AtomicBoolean cubre tambien dos requests que llegan juntos.
+                if (controller.playlistRefreshing.value || !refreshInFlight.compareAndSet(false, true)) {
+                    call.respond(
+                        HttpStatusCode.Conflict,
+                        PlaylistRefreshResult(
+                            ok = false,
+                            message = "Actualizacion de playlists en curso"
+                        )
+                    )
+                    return@post
+                }
+
+                try {
+                    // Puede haber arrancado una actualizacion desde la TV entre
+                    // las dos comprobaciones.
+                    if (controller.playlistRefreshing.value) {
+                        call.respond(
+                            HttpStatusCode.Conflict,
+                            PlaylistRefreshResult(
+                                ok = false,
+                                message = "Actualizacion de playlists en curso"
+                            )
+                        )
+                        return@post
+                    }
+
+                    val result = controller.refreshPlaylists()
+                    call.respond(result)
+                } catch (e: Exception) {
+                    call.respond(
+                        PlaylistRefreshResult(
+                            ok = false,
+                            message = e.message ?: "No se pudo actualizar la playlist"
+                        )
+                    )
+                } finally {
+                    refreshInFlight.set(false)
+                }
+            }
+
             post("/api/favorite") {
                 val request = call.receive<FavoriteRequest>()
                 if (!validToken(request.token)) {
@@ -215,7 +271,14 @@ class EmbeddedServer(
     private fun applyFavorite(channelId: String, enabled: Boolean?) {
         if (channelId.isBlank()) return
         controller.onMain {
-            val isFavorite = controller.favorites.value.contains(channelId)
+            // El identificador puede ser legacy o canonico: el controller
+            // resuelve ambos y decide el estado real del favorito.
+            val group = controller.catalog.value.groupByStateKey[channelId]
+                ?: controller.catalog.value.groupById[channelId]
+                ?: controller.catalog.value.groupOf(channelId)
+                ?: controller.catalog.value.groupByVariantStateKey[channelId]
+                ?: return@onMain
+            val isFavorite = controller.isFavorite(group)
             if (enabled == null || enabled != isFavorite) {
                 controller.toggleFavorite(channelId)
             }

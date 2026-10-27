@@ -11,9 +11,21 @@ internal object PlaylistMerge {
         loaded: List<PersistedSource>,
     ): List<PersistedSource> {
         val merged = current.toMutableList()
-        val knownIds = current.mapTo(mutableSetOf()) { it.id }
+        val indexById = mutableMapOf<String, Int>()
+        current.forEachIndexed { index, source -> indexById[source.id] = index }
         loaded.forEach { source ->
-            if (knownIds.add(source.id)) merged += source
+            val index = indexById[source.id]
+            if (index == null) {
+                indexById[source.id] = merged.size
+                merged += source
+            } else {
+                val existing = merged[index]
+                if (source.lastRefreshAt > existing.lastRefreshAt) {
+                    merged[index] = source.copy(
+                        content = source.content.ifBlank { existing.content },
+                    )
+                }
+            }
         }
         return merged
     }

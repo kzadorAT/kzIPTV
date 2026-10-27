@@ -155,7 +155,7 @@ object ChannelGrouper {
     fun hostOf(url: String): String =
         url.substringAfter("://").substringBefore('/').substringBefore('?').trim()
 
-    fun normalizeName(name: String): String = name.trim().lowercase().replace(Regex("[^a-z0-9]"), "")
+    fun normalizeName(name: String): String = ChannelIdentity.normalizeName(name)
 
     /** Las regex se compilan una sola vez por palabra: compilar 200+ veces froze la TV. */
     private val regionRegexCache = HashMap<String, Regex>()
@@ -209,7 +209,8 @@ object ChannelGrouper {
                 host = hostOf(item.channel.url),
                 url = item.channel.url,
                 headers = item.channel.headers,
-                kind = item.channel.kind
+                kind = item.channel.kind,
+                stateKey = item.channel.stateKey
             )
         }.sortedWith(
             compareByDescending<ChannelVariant> { qualityRank(it.quality) }
@@ -223,13 +224,18 @@ object ChannelGrouper {
             .minByOrNull { it.length }
             ?: items.first().channel.name
 
+        val groupTvgId = items.firstOrNull { it.channel.tvgId.isNotBlank() }
+            ?.let { baseTvgId(it.channel.tvgId) }
+            .orEmpty()
+
         return ChannelGroup(
             id = "g:" + hash(normalizeName(displayName)),
             name = displayName,
             logo = items.firstOrNull { it.channel.logo.isNotBlank() }?.channel?.logo.orEmpty(),
             groups = items.flatMap { it.channel.groups }.distinct(),
-            tvgId = items.firstOrNull { it.channel.tvgId.isNotBlank() }?.let { baseTvgId(it.channel.tvgId) }.orEmpty(),
-            variants = variants
+            tvgId = groupTvgId,
+            variants = variants,
+            stateKey = ChannelIdentity.groupKey(groupTvgId, displayName)
         )
     }
 

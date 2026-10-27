@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import ar.kziptv.core.catalog.ChannelCatalog
 import ar.kziptv.core.catalog.ChannelGrouper
+import ar.kziptv.core.catalog.PlaylistDiffer
 import ar.kziptv.core.epg.EpgCache
 import ar.kziptv.core.epg.EpgIndex
 import ar.kziptv.core.epg.EpgParser
@@ -13,6 +14,7 @@ import ar.kziptv.core.model.ChannelGroup
 import ar.kziptv.core.model.ChannelVariant
 import ar.kziptv.core.model.toChannel
 import ar.kziptv.core.parse.M3uParser
+import ar.kziptv.data.ChannelStateMigration
 import ar.kziptv.data.EpgRepository
 import ar.kziptv.data.KzStore
 import ar.kziptv.data.PlaylistMerge
@@ -36,6 +38,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
@@ -43,7 +47,7 @@ import java.util.zip.GZIPInputStream
 enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS }
 
 /** Filas de la pantalla de ajustes (el orden es el de navegacion). */
-enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG }
+enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG, PLAYLIST }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -74,6 +78,18 @@ data class ChannelDto(
     val next: String = "",
     val variants: List<VariantDto> = emptyList(),
     val activeVariantId: String = ""
+)
+
+/** Resultado de una actualizacion manual de playlists. */
+@Serializable
+data class PlaylistRefreshResult(
+    val ok: Boolean = false,
+    val added: Int = 0,
+    val removed: Int = 0,
+    val changed: Int = 0,
+    val sourcesRefreshed: Int = 0,
+    val sourcesFailed: Int = 0,
+    val message: String = "",
 )
 
 @Serializable
@@ -115,7 +131,9 @@ data class StateDto(
     /** Cuando se cargo la guia actual (epoch ms). */
     val epgUpdatedAt: Long = 0,
     /** true mientras se esta descargando o parseando la guia. */
-    val epgRefreshing: Boolean = false
+    val epgRefreshing: Boolean = false,
+    /** true mientras se actualizan las playlists. */
+    val playlistRefreshing: Boolean = false
 )
 
 class TvController(
@@ -128,6 +146,7 @@ class TvController(
 
     val catalog = MutableStateFlow(ChannelCatalog(emptyList()))
     val favorites = MutableStateFlow<Set<String>>(emptySet())
+    val playlistRefreshing = MutableStateFlow(false)
     val currentGroup = MutableStateFlow<ChannelGroup?>(null)
     val currentVariant = MutableStateFlow<ChannelVariant?>(null)
     val bannerVisible = MutableStateFlow(false)
@@ -283,6 +302,12 @@ class TvController(
     /** Reintentos por feed para errores transitorios de live. */
     private val retryCount = mutableMapOf<String, Int>()
 
+    /** Canales por fuente: permite refrescar una playlist sin perder las demas. */
+    private val channelsBySource = mutableMapOf<String, List<Channel>>()
+
+    /** Serializa los cambios de catalogo para que dos refresh no se pisen. */
+    private val refreshMutex = Mutex()
+
     /**
      * Feeds confirmados como ESTABLES: siguen reproduciendo despues de
      * [STABLE_PLAYING_MS] sin caerse.
@@ -326,7 +351,7 @@ class TvController(
             videoHeight.value = h
             // La resolución REAL del stream: el nombre del playlist suele mentir
             // (dice 1080p y entrega 480p).
-            val id = currentVariant.value?.channelId
+            val id = currentVariant.value?.stateKey
             if (id != null && w > 0) {
                 val value = w.toString() + "x" + h
                 if (store.state.value.measuredResolution[id] != value) {
@@ -482,24 +507,43 @@ class TvController(
             val sources = persistedState.sources.ifEmpty {
                 listOf(PersistedSource(id = BUNDLED_ID, name = "iptv-org \u00b7 Argentina", url = BUNDLED_URL, bundled = true))
             }
-            val all = mutableListOf<Channel>()
-            sources.forEach { source ->
+
+            // Cada fuente conserva su contenido anterior: una descarga fallida nunca vacia el catalogo.
+            channelsBySource.clear()
+            val loadedSources = mutableListOf<PersistedSource>()
+            for (source in sources) {
                 val content = try {
                     when {
-                        source.bundled -> repo.bundledAr()
                         source.content.isNotBlank() -> source.content
+                        source.bundled -> repo.bundledAr()
                         else -> repo.fetch(source.url)
                     }
                 } catch (e: Exception) {
                     setStatus("No pude leer ${source.name}: ${e.message}", sticky = true)
                     null
-                } ?: return@forEach
-                all += withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
+                } ?: continue
+                val channels = withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
+                if (channels.isEmpty()) {
+                    setStatus("La lista ${source.name} no tiene canales", sticky = true)
+                    continue
+                }
+                channelsBySource[source.id] = channels
+                loadedSources += if (!source.bundled && source.content.isBlank()) {
+                    source.copy(
+                        content = content,
+                        channelCount = channels.size,
+                        lastRefreshAt = System.currentTimeMillis(),
+                    )
+                } else {
+                    source.copy(channelCount = channels.size)
+                }
             }
+
+            val all = channelsBySource.values.flatten()
             applyChannels(all)
             store.update { current ->
                 current.copy(
-                    sources = PlaylistMerge.merge(current.sources, sources),
+                    sources = PlaylistMerge.merge(current.sources, loadedSources),
                     pairingCode = resolvedPairingCode,
                 )
             }
@@ -514,24 +558,196 @@ class TvController(
             } else {
                 // Retoma el ultimo canal que se estaba viendo; si no, el primero disponible.
                 val list = catalog.value.groups
-                val lastGroupId = persistedState.lastGroupId
-                val target = list.firstOrNull { it.id == lastGroupId && it.variants.any { v -> v.playable } }
-                    ?: list.firstOrNull { it.variants.any { v -> v.playable } }
+                val lastGroupKey = store.state.value.lastGroupId
+                val target = list.firstOrNull {
+                    it.stateKey == lastGroupKey && it.variants.any { v -> v.playable }
+                } ?: list.firstOrNull { it.variants.any { v -> v.playable } }
                 if (target != null) play(target, showBanner = false)
             }
         }
     }
 
     /**
-     * Construye el catalogo. El agrupado (regex sobre 200+ nombres) tarda ~1,5 s en la TV:
-     * va en IO para no congelar la UI en el arranque.
+     * Construye el catalogo y conserva el estado por clave canonica. El agrupado (regex sobre
+     * 200+ nombres) tarda ~1,5 s en la TV: va en IO para no congelar la UI.
      */
     private suspend fun applyChannels(channels: List<Channel>) {
-        catalog.value = withContext(Dispatchers.IO) { ChannelCatalog(channels) }
+        val next = withContext(Dispatchers.IO) {
+            ChannelCatalog(channels, store.state.value.channelNumbers)
+        }
+        catalog.value = next
+        store.update { current ->
+            val migrated = ChannelStateMigration.migrate(current, next)
+            current.copy(
+                favorites = migrated.favorites,
+                qualityPreference = migrated.qualityPreference,
+                variantStatus = migrated.variantStatus,
+                measuredResolution = migrated.measuredResolution,
+                channelNumbers = current.channelNumbers + next.numberAssignments,
+                lastGroupId = migrated.lastGroupId,
+                lastChannelId = migrated.lastChannelId,
+            )
+        }
         favorites.value = store.state.value.favorites.toSet()
         setStatus("${catalog.value.groups.size} canales" +
             (if (catalog.value.variantCount > catalog.value.groups.size) " (${catalog.value.variantCount} feeds)" else "") +
             " cargados")
+    }
+
+    /**
+     * Actualiza todas las playlists que tienen URL.
+     *
+     * Cada fuente se descarga y parsea por separado: si una falla, conserva su catalogo
+     * anterior. El catalogo nuevo se aplica de una sola vez y el estado del usuario
+     * (favoritos, calidad, salud y numeros) se traduce a las claves canonicas.
+     */
+    suspend fun refreshPlaylists(): PlaylistRefreshResult {
+        if (!refreshMutex.tryLock()) {
+            return PlaylistRefreshResult(
+                ok = false,
+                message = "Ya hay una actualizacion de playlists en curso",
+            )
+        }
+        playlistRefreshing.value = true
+        try {
+            val sources = store.state.value.sources
+            val refreshable = sources.filter { it.url.isNotBlank() }
+            if (refreshable.isEmpty()) {
+                val message = "No hay playlists por URL para actualizar"
+                setStatus(message, sticky = true)
+                return PlaylistRefreshResult(ok = false, message = message)
+            }
+
+            val oldCatalog = catalog.value
+            val nextBySource = channelsBySource.toMutableMap()
+            val updatedSources = sources.toMutableList()
+            var refreshed = 0
+            var failed = 0
+            val errors = mutableListOf<String>()
+
+            for (source in refreshable) {
+                try {
+                    val content = withContext(Dispatchers.IO) { repo.fetch(source.url) }
+                    val channels = withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
+                    if (channels.isEmpty()) error("La lista no tiene canales")
+                    nextBySource[source.id] = channels
+                    val index = updatedSources.indexOfFirst { it.id == source.id }
+                    val updated = source.copy(
+                        content = content,
+                        channelCount = channels.size,
+                        lastRefreshAt = System.currentTimeMillis(),
+                    )
+                    if (index >= 0) updatedSources[index] = updated else updatedSources += updated
+                    refreshed++
+                } catch (e: Exception) {
+                    failed++
+                    errors += "${source.name}: ${e.message ?: "error"}"
+                    android.util.Log.w("KzRefresh", "fallo al refrescar ${source.name}", e)
+                }
+            }
+
+            if (refreshed == 0) {
+                val message = if (errors.isEmpty()) {
+                    "No se pudo actualizar ninguna playlist"
+                } else {
+                    errors.joinToString("; ")
+                }
+                setStatus(message, sticky = true)
+                return PlaylistRefreshResult(
+                    ok = false,
+                    sourcesFailed = failed,
+                    message = message,
+                )
+            }
+
+            val newChannels = nextBySource.values.flatten()
+            val diff = PlaylistDiffer.diff(oldCatalog.all, newChannels)
+            val newCatalog = withContext(Dispatchers.IO) {
+                ChannelCatalog(newChannels, store.state.value.channelNumbers)
+            }
+            val urlChanges = changedVariantUrls(oldCatalog.all, newChannels)
+
+            store.update { current ->
+                val migrated = ChannelStateMigration.migrate(
+                    state = current,
+                    newCatalog = newCatalog,
+                    oldCatalog = oldCatalog,
+                    rekeyed = diff.rekeyed,
+                )
+                current.copy(
+                    sources = PlaylistMerge.merge(current.sources, updatedSources),
+                    favorites = migrated.favorites,
+                    qualityPreference = migrated.qualityPreference,
+                    variantStatus = migrated.variantStatus - urlChanges,
+                    measuredResolution = migrated.measuredResolution - urlChanges,
+                    channelNumbers = current.channelNumbers + newCatalog.numberAssignments,
+                    lastGroupId = migrated.lastGroupId,
+                    lastChannelId = migrated.lastChannelId,
+                )
+            }
+
+            channelsBySource.clear()
+            channelsBySource.putAll(nextBySource)
+            catalog.value = newCatalog
+            favorites.value = store.state.value.favorites.toSet()
+            reconcileAfterRefresh(oldCatalog, newCatalog)
+            retryCount.clear()
+            stableVariants.clear()
+
+            val message = buildString {
+                append("Playlists actualizadas: +${diff.added.size} / -${diff.removed.size} / ~${diff.changed.size}")
+                if (failed > 0) append(" (${failed} fallaron)")
+            }
+            setStatus(message)
+            return PlaylistRefreshResult(
+                ok = true,
+                added = diff.added.size,
+                removed = diff.removed.size,
+                changed = diff.changed.size,
+                sourcesRefreshed = refreshed,
+                sourcesFailed = failed,
+                message = message,
+            )
+        } finally {
+            playlistRefreshing.value = false
+            refreshMutex.unlock()
+        }
+    }
+
+    /** Variantes cuya URL cambio: su estado de salud anterior ya no aplica. */
+    private fun changedVariantUrls(old: List<Channel>, new: List<Channel>): Set<String> {
+        val oldUrls = old.associate { it.stateKey to it.url }
+        return new.mapNotNull { channel ->
+            val previous = oldUrls[channel.stateKey]
+            if (previous != null && previous != channel.url) channel.stateKey else null
+        }.toSet()
+    }
+
+    /** Reapunta foco y reproduccion actual al canal canonico equivalente. */
+    private fun reconcileAfterRefresh(oldCatalog: ChannelCatalog, newCatalog: ChannelCatalog) {
+        currentGroup.value = currentGroup.value?.stateKey?.let { newCatalog.groupByStateKey[it] }
+        currentVariant.value = currentVariant.value?.stateKey?.let { key ->
+            newCatalog.groups.asSequence()
+                .flatMap { it.variants.asSequence() }
+                .firstOrNull { it.stateKey == key }
+        }
+        focusedGroupId.value = focusedGroupId.value?.let { oldId ->
+            val key = oldCatalog.groupById[oldId]?.stateKey
+                ?: oldCatalog.variantStateKeyById[oldId]?.let { variantKey ->
+                    oldCatalog.groupByVariantStateKey[variantKey]?.stateKey
+                }
+            key?.let { newCatalog.groupByStateKey[it]?.id } ?: oldId
+        }
+        focusedVariantId.value = focusedVariantId.value?.let { oldId ->
+            val key = oldCatalog.variantStateKeyById[oldId]
+            key?.let { variantKey ->
+                newCatalog.groups.asSequence()
+                    .flatMap { it.variants.asSequence() }
+                    .firstOrNull { it.stateKey == variantKey }
+                    ?.channelId
+            } ?: oldId
+        }
+        searchResults.value = emptyList()
     }
 
     /**
@@ -744,7 +960,7 @@ class TvController(
         playbackState.value = "buffering"
         playbackError.value = ""
         scope.launch {
-            store.update { it.copy(lastGroupId = group.id, lastChannelId = chosen.channelId) }
+            store.update { it.copy(lastGroupId = group.stateKey, lastChannelId = chosen.stateKey) }
             store.recordWatch(group.id, group.id, chosen.channelId)
         }
         if (showBanner) showBanner()
@@ -752,10 +968,10 @@ class TvController(
 
     /** Elige la variante: la preferencia del usuario si sigue viva, si no la de mayor calidad. */
     fun chooseVariant(group: ChannelGroup): ChannelVariant {
-        val preference = store.state.value.qualityPreference[group.id]
+        val preference = store.state.value.qualityPreference[group.stateKey]
         val alive = group.variants.filter { variantStatus(it.channelId) != ChannelVariant.STATUS_DEAD }
         val pool = if (alive.isNotEmpty()) alive else group.variants
-        return pool.firstOrNull { it.channelId == preference }
+        return pool.firstOrNull { it.stateKey == preference }
             ?: pool.maxByOrNull { ChannelGrouper.qualityRank(it.quality) }
             ?: group.variants.first()
     }
@@ -776,8 +992,11 @@ class TvController(
 
     fun favoritesList(): List<ChannelGroup> =
         favorites.value.mapNotNull { id ->
-            catalog.value.groupById[id] ?: catalog.value.groupOf(id)
-        }.distinctBy { it.id }.sortedBy { it.number }.map { enrich(it) }
+            catalog.value.groupByStateKey[id]
+                ?: catalog.value.groupByVariantStateKey[id]
+                ?: catalog.value.groupById[id]
+                ?: catalog.value.groupOf(id)
+        }.distinctBy { it.stateKey }.sortedBy { it.number }.map { enrich(it) }
 
     /** Enriquece el grupo con la salud real de cada feed y la resolución medida. */
     private fun enrich(group: ChannelGroup): ChannelGroup {
@@ -786,25 +1005,35 @@ class TvController(
             variants = group.variants.map { v ->
                 v.copy(
                     status = variantStatus(v.channelId),
-                    measured = measured[v.channelId].orEmpty()
+                    measured = measured[v.stateKey].orEmpty()
                 )
             }
         )
     }
 
     fun isFavorite(group: ChannelGroup): Boolean =
-        favorites.value.contains(group.id) || group.variants.any { favorites.value.contains(it.channelId) }
+        favorites.value.contains(group.stateKey) ||
+            favorites.value.contains(group.id) ||
+            group.variants.any { favorites.value.contains(it.stateKey) || favorites.value.contains(it.channelId) }
 
     fun toggleFavorite(groupId: String? = null) {
         val id = groupId ?: focusedGroupId.value ?: currentGroup.value?.id ?: return
-        val group = catalog.value.groupById[id] ?: return
+        val group = catalog.value.groupByStateKey[id]
+            ?: catalog.value.groupById[id]
+            ?: catalog.value.groupOf(id)
+            ?: catalog.value.groupByVariantStateKey[id]
+            ?: return
         val wasFavorite = isFavorite(group)
         val updated = favorites.value.toMutableSet()
         if (wasFavorite) {
+            updated.remove(group.stateKey)
             updated.remove(group.id)
-            group.variants.forEach { updated.remove(it.channelId) }
+            group.variants.forEach {
+                updated.remove(it.stateKey)
+                updated.remove(it.channelId)
+            }
         } else {
-            updated.add(group.id)
+            updated.add(group.stateKey)
         }
         favorites.value = updated
         scope.launch {
@@ -1221,6 +1450,7 @@ class TvController(
             Setting.ZAP -> toggleZapMode()
             Setting.VIDEO -> cycleVideoFit()
             Setting.EPG -> refreshEpg()
+            Setting.PLAYLIST -> scope.launch { refreshPlaylists() }
         }
     }
 
@@ -1265,9 +1495,13 @@ class TvController(
     /** Reproduce una variante puntual (desde el companion) y la deja como preferencia. */
     fun playVariant(groupId: String, variantId: String) {
         val group = catalog.value.resolve(groupId) ?: return
-        val variant = group.variants.firstOrNull { it.channelId == variantId } ?: return
+        val variant = group.variants.firstOrNull {
+            it.channelId == variantId || it.stateKey == variantId
+        } ?: return
         scope.launch {
-            store.update { it.copy(qualityPreference = it.qualityPreference + (group.id to variantId)) }
+            store.update {
+                it.copy(qualityPreference = it.qualityPreference + (group.stateKey to variant.stateKey))
+            }
         }
         markVariant(variantId, ChannelVariant.STATUS_UNKNOWN)
         screen.value = Screen.PLAYER
@@ -1277,9 +1511,13 @@ class TvController(
     /** Elige una variante: se reproduce y queda como preferencia para ese canal. */
     fun selectVariant(variantId: String) {
         val target = qualityTarget.value ?: currentGroup.value ?: return
-        val variant = target.variants.firstOrNull { it.channelId == variantId } ?: return
+        val variant = target.variants.firstOrNull {
+            it.channelId == variantId || it.stateKey == variantId
+        } ?: return
         scope.launch {
-            store.update { it.copy(qualityPreference = it.qualityPreference + (target.id to variantId)) }
+            store.update {
+                it.copy(qualityPreference = it.qualityPreference + (target.stateKey to variant.stateKey))
+            }
         }
         markVariant(variantId, ChannelVariant.STATUS_UNKNOWN)
         screen.value = Screen.PLAYER
@@ -1577,7 +1815,9 @@ class TvController(
     private fun moveQualityFocus(code: Int) {
         val variants = qualityTarget.value?.variants ?: return
         if (variants.isEmpty()) return
-        val index = variants.indexOfFirst { it.channelId == focusedVariantId.value }.let { if (it < 0) 0 else it }
+        val index = variants.indexOfFirst {
+            it.channelId == focusedVariantId.value || it.stateKey == focusedVariantId.value
+        }.let { if (it < 0) 0 else it }
         val next = GridNavigator.moveVertical(index, variants.size, code)
         focusedVariantId.value = variants[next].channelId
         android.util.Log.d(
@@ -1586,36 +1826,44 @@ class TvController(
         )
     }
 
-    suspend fun addSourceByUrl(url: String): Int = withContext(Dispatchers.IO) {
-        val content = repo.fetch(url)
-        val sourceId = "url-${System.currentTimeMillis()}"
-        val channels = M3uParser.parse(content, sourceId)
-        if (channels.isEmpty()) error("La lista no tiene canales")
-        val source = PersistedSource(
-            id = sourceId,
-            name = url.substringAfterLast('/').ifBlank { "Playlist" },
-            url = url,
-            channelCount = channels.size
-        )
-        store.update { it.copy(sources = it.sources + source) }
-        applyChannels(catalog.value.all + channels)
-        channels.size
+    suspend fun addSourceByUrl(url: String): Int = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val content = repo.fetch(url)
+            val sourceId = "url-${System.currentTimeMillis()}"
+            val channels = M3uParser.parse(content, sourceId)
+            if (channels.isEmpty()) error("La lista no tiene canales")
+            val source = PersistedSource(
+                id = sourceId,
+                name = url.substringAfterLast('/').ifBlank { "Playlist" },
+                url = url,
+                channelCount = channels.size,
+                content = content,
+                lastRefreshAt = System.currentTimeMillis(),
+            )
+            store.update { it.copy(sources = it.sources + source) }
+            channelsBySource[sourceId] = channels
+            applyChannels(channelsBySource.values.flatten())
+            channels.size
+        }
     }
 
-    suspend fun addSourceByContent(name: String, content: String): Int = withContext(Dispatchers.IO) {
-        val sourceId = "file-${System.currentTimeMillis()}"
-        val channels = M3uParser.parse(content, sourceId)
-        if (channels.isEmpty()) error("El archivo no tiene canales")
-        val source = PersistedSource(
-            id = sourceId,
-            name = name.ifBlank { "Playlist" },
-            bundled = false,
-            channelCount = channels.size,
-            content = content,
-        )
-        store.update { it.copy(sources = it.sources + source) }
-        applyChannels(catalog.value.all + channels)
-        channels.size
+    suspend fun addSourceByContent(name: String, content: String): Int = refreshMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val sourceId = "file-${System.currentTimeMillis()}"
+            val channels = M3uParser.parse(content, sourceId)
+            if (channels.isEmpty()) error("El archivo no tiene canales")
+            val source = PersistedSource(
+                id = sourceId,
+                name = name.ifBlank { "Playlist" },
+                bundled = false,
+                channelCount = channels.size,
+                content = content,
+            )
+            store.update { it.copy(sources = it.sources + source) }
+            channelsBySource[sourceId] = channels
+            applyChannels(channelsBySource.values.flatten())
+            channels.size
+        }
     }
 
     fun snapshot(): StateDto {
@@ -1671,7 +1919,7 @@ class TvController(
                             region = variant.region,
                             host = variant.host,
                             status = variantStatus(variant.channelId),
-                            measured = store.state.value.measuredResolution[variant.channelId].orEmpty(),
+                            measured = store.state.value.measuredResolution[variant.stateKey].orEmpty(),
                             active = variant.channelId == activeVariantId
                         )
                     }
@@ -1680,7 +1928,8 @@ class TvController(
             epgUrl = store.state.value.epgUrl,
             epgSource = epgSource.value,
             epgUpdatedAt = epgUpdatedAt.value,
-            epgRefreshing = epgRefreshing.value
+            epgRefreshing = epgRefreshing.value,
+            playlistRefreshing = playlistRefreshing.value
         )
     }
 
@@ -1689,7 +1938,8 @@ class TvController(
      * no debe dejar un canal inutilizado para siempre.
      */
     private fun variantStatus(variantId: String): String {
-        val raw = store.state.value.variantStatus[variantId] ?: return ChannelVariant.STATUS_UNKNOWN
+        val key = catalog.value.variantStateKeyById[variantId] ?: variantId
+        val raw = store.state.value.variantStatus[key] ?: return ChannelVariant.STATUS_UNKNOWN
         if (!raw.startsWith(ChannelVariant.STATUS_DEAD)) return raw
         // Los estados guardados antes del TTL no tienen timestamp: caducan de una.
         val stamp = raw.substringAfter('#', "").toLongOrNull() ?: return ChannelVariant.STATUS_UNKNOWN
@@ -1699,14 +1949,15 @@ class TvController(
 
     private fun markVariant(variantId: String?, status: String) {
         if (variantId.isNullOrBlank()) return
+        val key = catalog.value.variantStateKeyById[variantId] ?: variantId
         val value = if (status == ChannelVariant.STATUS_DEAD) {
             status + "#" + System.currentTimeMillis()
         } else {
             status
         }
-        if (store.state.value.variantStatus[variantId] == value) return
+        if (store.state.value.variantStatus[key] == value) return
         scope.launch {
-            store.update { it.copy(variantStatus = it.variantStatus + (variantId to value)) }
+            store.update { it.copy(variantStatus = it.variantStatus + (key to value)) }
         }
     }
 

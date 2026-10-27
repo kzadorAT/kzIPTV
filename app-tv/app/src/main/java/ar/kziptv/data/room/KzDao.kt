@@ -17,6 +17,15 @@ interface KzDao {
     @Query("DELETE FROM playlists")
     suspend fun deletePlaylists()
 
+    @Query("SELECT * FROM channel_numbers ORDER BY number, channelKey")
+    suspend fun getChannelNumbers(): List<ChannelNumberEntity>
+
+    @Upsert
+    suspend fun upsertChannelNumbers(rows: List<ChannelNumberEntity>)
+
+    @Query("DELETE FROM channel_numbers")
+    suspend fun deleteChannelNumbers()
+
     @Query("SELECT * FROM favorites ORDER BY position")
     suspend fun getFavorites(): List<FavoriteEntity>
 

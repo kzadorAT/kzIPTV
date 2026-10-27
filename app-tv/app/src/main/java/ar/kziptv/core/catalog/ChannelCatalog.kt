@@ -7,7 +7,10 @@ import ar.kziptv.core.model.ChannelGroup
  * Catalogo de la app. El usuario ve canales LOGICOS (una tarjeta por señal);
  * cada canal logico tiene una o mas variantes (feeds/calidades) para reproducir.
  */
-class ChannelCatalog(channels: List<Channel>) {
+class ChannelCatalog(
+    channels: List<Channel>,
+    preferredNumbers: Map<String, Int> = emptyMap(),
+) {
 
     /** Todos los feeds concretos, ordenados. */
     val all: List<Channel> = channels.sortedWith(
@@ -17,11 +20,30 @@ class ChannelCatalog(channels: List<Channel>) {
     /** Feed concreto por id. */
     val byId: Map<String, Channel> = all.associateBy { it.id }
 
-    /** Canales logicos (una tarjeta por señal), numerados 1..N. */
-    val groups: List<ChannelGroup> = ChannelGrouper.group(all)
-        .mapIndexed { index, group -> group.copy(number = index + 1) }
+    /** Canales logicos (una tarjeta por señal). */
+    private val grouped: List<ChannelGroup> = ChannelGrouper.group(all)
+
+    /** Los canales existentes conservan su numero; los nuevos se agregan al final. */
+    val numberAssignments: Map<String, Int> = assignNumbers(grouped, preferredNumbers)
+
+    val groups: List<ChannelGroup> = grouped.map { group ->
+        group.copy(number = numberAssignments[group.stateKey] ?: 0)
+    }
 
     val groupById: Map<String, ChannelGroup> = groups.associateBy { it.id }
+
+    /** Clave canonica -> canal logico. */
+    val groupByStateKey: Map<String, ChannelGroup> = groups.associateBy { it.stateKey }
+
+    /** Id concreto legacy -> clave canonica estable de la variante. */
+    val variantStateKeyById: Map<String, String> = groups
+        .flatMap { group -> group.variants.map { it.channelId to it.stateKey } }
+        .toMap()
+
+    /** Clave canonica de variante -> canal logico. */
+    val groupByVariantStateKey: Map<String, ChannelGroup> = groups
+        .flatMap { group -> group.variants.map { it.stateKey to group } }
+        .toMap()
 
     /** Id de canal concreto -> id de canal logico. */
     val groupIdByVariantId: Map<String, String> = groups
@@ -35,6 +57,31 @@ class ChannelCatalog(channels: List<Channel>) {
     /** Canales logicos de una categoria (o todos). */
     fun inCategory(category: String?): List<ChannelGroup> =
         if (category == null) groups else groups.filter { category in it.groups }
+
+    private fun assignNumbers(
+        groups: List<ChannelGroup>,
+        preferred: Map<String, Int>,
+    ): Map<String, Int> {
+        val result = preferred.toMutableMap()
+        val currentKeys = groups.map { it.stateKey }.toSet()
+        val used = preferred.filterKeys { it !in currentKeys }.values
+            .filter { it > 0 }
+            .toMutableSet()
+        var next = (preferred.values.maxOrNull() ?: 0) + 1
+        for (group in groups) {
+            val saved = preferred[group.stateKey]
+            if (saved != null && saved > 0 && saved !in used) {
+                result[group.stateKey] = saved
+                used += saved
+                continue
+            }
+            while (next in used) next++
+            result[group.stateKey] = next
+            used += next
+            next++
+        }
+        return result
+    }
 
     /** Busca por nombre, tvg-id o categoria. */
     fun search(query: String): List<ChannelGroup> {

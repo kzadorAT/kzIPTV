@@ -13,8 +13,17 @@ data class PlaylistEntity(
     val bundled: Boolean,
     val channelCount: Int,
     val position: Int,
-    /** Contenido M3U para fuentes subidas por el companion. */
+    /** Contenido M3U para fuentes subidas o descargadas por la app. */
     val content: String = "",
+    /** Ultima descarga exitosa de esta playlist (epoch ms). */
+    val lastRefreshAt: Long = 0
+)
+
+/** Numero estable de un canal logico, indexado por su clave canonica. */
+@Entity(tableName = "channel_numbers")
+data class ChannelNumberEntity(
+    @PrimaryKey val channelKey: String,
+    val number: Int
 )
 
 @Entity(tableName = "favorites")

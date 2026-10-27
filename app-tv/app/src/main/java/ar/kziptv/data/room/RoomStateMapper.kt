@@ -15,6 +15,7 @@ internal object RoomStateMapper {
                 channelCount = source.channelCount,
                 position = index,
                 content = source.content,
+                lastRefreshAt = source.lastRefreshAt,
             )
         }
 
@@ -54,6 +55,11 @@ internal object RoomStateMapper {
         }
     }
 
+    fun channelNumbers(state: PersistedState): List<ChannelNumberEntity> =
+        state.channelNumbers.map { (channelKey, number) ->
+            ChannelNumberEntity(channelKey = channelKey, number = number)
+        }
+
     fun persistedState(
         playlists: List<PlaylistEntity>,
         favorites: List<FavoriteEntity>,
@@ -61,6 +67,7 @@ internal object RoomStateMapper {
         settings: AppSettingsEntity?,
         qualityPreferences: List<QualityPreferenceEntity>,
         variantStates: List<VariantStateEntity>,
+        channelNumbers: List<ChannelNumberEntity>,
     ): PersistedState {
         val variantStatus = mutableMapOf<String, String>()
         val measuredResolution = mutableMapOf<String, String>()
@@ -80,6 +87,7 @@ internal object RoomStateMapper {
                     bundled = it.bundled,
                     channelCount = it.channelCount,
                     content = it.content,
+                    lastRefreshAt = it.lastRefreshAt,
                 )
             },
             favorites = favorites.sortedBy { it.position }.map { it.channelId },
@@ -92,6 +100,7 @@ internal object RoomStateMapper {
             qualityPreference = qualityPreferences.associate { it.groupId to it.variantId },
             variantStatus = variantStatus,
             measuredResolution = measuredResolution,
+            channelNumbers = channelNumbers.associate { it.channelKey to it.number },
         )
     }
 }

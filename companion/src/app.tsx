@@ -27,6 +27,16 @@ type ChannelDto = {
   activeVariantId: string;
 };
 
+type PlaylistRefreshResult = {
+  ok: boolean;
+  added: number;
+  removed: number;
+  changed: number;
+  sourcesRefreshed: number;
+  sourcesFailed: number;
+  message: string;
+};
+
 type StateDto = {
   pairingCode: string;
   screen: string;
@@ -54,6 +64,9 @@ type StateDto = {
   epgSource: string;
   epgUpdatedAt: number;
   epgRefreshing: boolean;
+  playlistRefreshing: boolean;
+  videoWidth: number;
+  videoHeight: number;
 };
 
 const KEY = {
@@ -95,6 +108,8 @@ export function App() {
   const [qualityFor, setQualityFor] = useState<ChannelDto | null>(null);
   const [epgUrl, setEpgUrl] = useState<string>("");
   const [epgTouched, setEpgTouched] = useState<boolean>(false);
+  const [playlistRefreshing, setPlaylistRefreshing] = useState<boolean>(false);
+  const [playlistResult, setPlaylistResult] = useState<PlaylistRefreshResult | null>(null);
   const socket = useRef<WebSocket | null>(null);
 
   // estado de la TV (polling simple y robusto)
@@ -192,6 +207,35 @@ export function App() {
     setMessage(res.ok ? "Guia EPG: " + (res.message || "actualizando") : "Error: " + (res.message || "rechazada"));
   };
 
+  const refreshPlaylist = async () => {
+    if (playlistRefreshing) return;
+    setPlaylistRefreshing(true);
+    setPlaylistResult(null);
+    setMessage("Actualizando playlist...");
+    try {
+      const res = await api("/api/refresh", { token: token() });
+      const result: PlaylistRefreshResult = {
+        ok: !!res.ok,
+        added: Number(res.added || 0),
+        removed: Number(res.removed || 0),
+        changed: Number(res.changed || 0),
+        sourcesRefreshed: Number(res.sourcesRefreshed || 0),
+        sourcesFailed: Number(res.sourcesFailed || 0),
+        message: res.message || "",
+      };
+      setPlaylistResult(result);
+      setMessage(
+        result.ok
+          ? "Playlist actualizada: +" + result.added + " / -" + result.removed + " / ~" + result.changed
+          : "Error: " + (result.message || "no se pudo actualizar")
+      );
+    } catch (e) {
+      setMessage("Error: no se pudo actualizar la playlist");
+    } finally {
+      setPlaylistRefreshing(false);
+    }
+  };
+
   const toggleFavorite = async (channelId: string, enabled: boolean) => {
     await api("/api/favorite", { channelId, enabled, token: token() });
   };
@@ -273,6 +317,18 @@ export function App() {
             <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} />
             <button class="primary" onClick={sendSource}>Enviar</button>
           </div>
+          <div class="row">
+            <button class="primary" onClick={refreshPlaylist} disabled={playlistRefreshing}>
+              {playlistRefreshing ? "Actualizando playlist..." : "Actualizar playlist"}
+            </button>
+          </div>
+          {playlistResult ? (
+            <p class={"msg" + (playlistResult.ok ? "" : " err")}>
+              Playlist: +{playlistResult.added} agregados · -{playlistResult.removed} quitados · ~{playlistResult.changed} cambiados
+              {" · " + playlistResult.sourcesFailed + " fuentes fallidas"}
+              {playlistResult.message ? " · " + playlistResult.message : ""}
+            </p>
+          ) : null}
           <label>URL de la guia EPG (XMLTV, puede ir .gz)</label>
           <div class="row">
             <input

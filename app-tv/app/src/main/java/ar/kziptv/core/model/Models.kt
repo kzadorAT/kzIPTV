@@ -13,7 +13,8 @@ data class Channel(
     val url: String,
     val headers: Map<String, String> = emptyMap(),
     val kind: String = KIND_HLS,
-    val number: Int = 0
+    val number: Int = 0,
+    val stateKey: String = ""
 ) {
     val playable: Boolean get() = kind != KIND_UNSUPPORTED
 
@@ -42,7 +43,8 @@ data class ChannelVariant(
     val kind: String = Channel.KIND_HLS,
     val status: String = STATUS_UNKNOWN,
     /** Resolución REAL medida ("720x480"); el nombre del playlist suele mentir. */
-    val measured: String = ""
+    val measured: String = "",
+    val stateKey: String = ""
 ) {
     val playable: Boolean get() = kind != Channel.KIND_UNSUPPORTED
 
@@ -68,7 +70,8 @@ data class ChannelGroup(
     val tvgId: String = "",
     val variants: List<ChannelVariant> = emptyList(),
     val activeVariantId: String = "",
-    val status: String = ChannelVariant.STATUS_UNKNOWN
+    val status: String = ChannelVariant.STATUS_UNKNOWN,
+    val stateKey: String = ""
 ) {
     val variantCount: Int get() = variants.size
     val hasVariants: Boolean get() = variants.size > 1
@@ -84,7 +87,8 @@ fun ChannelVariant.toChannel(): Channel = Channel(
     name = name,
     url = url,
     headers = headers,
-    kind = kind
+    kind = kind,
+    stateKey = stateKey
 )
 
 @Serializable

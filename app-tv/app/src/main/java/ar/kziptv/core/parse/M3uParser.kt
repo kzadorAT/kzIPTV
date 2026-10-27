@@ -1,5 +1,6 @@
 package ar.kziptv.core.parse
 
+import ar.kziptv.core.catalog.ChannelIdentity
 import ar.kziptv.core.model.Channel
 import java.security.MessageDigest
 
@@ -82,7 +83,8 @@ object M3uParser {
                         groups = channelGroups,
                         url = line,
                         headers = headers.toMap(),
-                        kind = kindOf(line)
+                        kind = kindOf(line),
+                        stateKey = ChannelIdentity.variantKey(sourceId, tvgId, name)
                     )
                     attrs = emptyMap()
                     headers = mutableMapOf()
