@@ -1,17 +1,23 @@
 # HANDOVER - kzIPTV (para retomar en un chat nuevo)
 
 > Fecha de corte: **26/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
-> - Working tree **limpio** y todo comiteado (ultimo commit funcional: `2c44150`).
+> - Rama `main` **sin remoto** (el usuario pidio dejar la publicacion del repo para el final).
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
 > los limites fisicos de la TV y la lista de lo que falta.
 >
-> **Resumen de la sesion que se cerro (26/10/2026 noche):** se implemento y verifico en la TV real
-> el **EPG fresco**: la app baja la guia de una URL configurable, la cachea en disco (24 h) y en
-> Room (SHA-256) y actualiza la guia en caliente sin reinstalar la app. Nuevo endpoint
-> `POST /api/epg`, campo en el companion y fila "Guia EPG" en Ajustes. La sesion anterior (tarde:
-> scroll de la grilla, cartel de estado y pantalla AJUSTES) esta en la seccion 12; esta en la 13.
+> **Resumen de la sesion que se cerro (26/10/2026, 2a parte de la noche):** se implemento y verifico
+> en la TV real el **refresh de playlist con diff**: la TV vuelve a bajar las M3U por URL, calcula el
+> diff contra el catalogo anterior y **conserva favoritos, calidad, salud y numeracion** aunque el
+> proveedor renombre el canal o cambie la URL del stream. Nueva fila "Actualizar playlist" en
+> Ajustes, nuevo endpoint `POST /api/refresh` y boton en el companion. Seccion 14.
+>
+> **Resumen de la sesion anterior (26/10/2026 noche):** el **EPG fresco**: la app baja la guia de una
+> URL configurable, la cachea en disco (24 h) y en Room (SHA-256) y actualiza la guia en caliente sin
+> reinstalar la app. Nuevo endpoint `POST /api/epg`, campo en el companion y fila "Guia EPG" en
+> Ajustes. La sesion anterior (tarde: scroll de la grilla, cartel de estado y pantalla AJUSTES) esta
+> en la seccion 12; esta en la 13.
 
 ---
 
@@ -53,16 +59,21 @@ IP `192.168.1.18:5555` (ADB por WiFi; cambio desde `192.168.1.20` el 26/10/2026)
 - **Numero directo** 0-9 + OK.
 - **Favoritos** (AMARILLO) y **zap solo-favoritos** (ROJO).
 - **EPG** ahora/siguiente (46 canales con guia real, 2.474 programas).
+- **Refresh de playlist con diff**: la TV vuelve a bajar las M3U por URL y **conserva favoritos,
+  calidad, salud y numeracion** aunque el proveedor renombre el canal o cambie la URL del feed
+  (identidad canonica por `tvg-id`; ver seccion 14).
 - **Setup por QR** + **companion web** completo (emparejar, mandar playlist, control remoto, lista).
 - **Mosaico de 16 tiles** con frame congelado por canal, sin senal para los caidos, y **surf**.
 - **Salvapantallas** (`FLAG_KEEP_SCREEN_ON`) durante reproduccion y en el mosaico.
 - **BACK doble en la grilla = salir de la app** (ver seccion 5; verificado en la TV real).
-- **76 tests unitarios** verdes (`testDebugUnitTest`) + **5 tests instrumentados** en la TV real
-  (import del JSON legado, migracion Room v1→v3, cache EPG, historial y escrituras concurrentes).
-- **Persistencia en Room** (esquema v3) con multi-lista, historial y cache EPG (ver seccion 2.1).
+- **92 tests unitarios** verdes (`testDebugUnitTest`) + **5 tests instrumentados** en la TV real
+  (import del JSON legado, migracion Room v1→v5, cache EPG, historial y escrituras concurrentes).
+- **Persistencia en Room** (esquema v5) con multi-lista, historial, cache EPG, numeros de canal y
+  marca de refresh (ver seccion 2.1).
 - **Scroll de la grilla** que acompana al foco (antes la pantalla se quedaba estatica al seguir bajando).
 - **Cartel de estado transitorio**: los mensajes informativos se van solos a los 3,5 s; los errores quedan fijos.
-- **Pantalla AJUSTES** (tecla **AZUL**) con 4 filas: Servidor web / Emparejar el celular (QR) / Zap / Video.
+- **Pantalla AJUSTES** (tecla **AZUL**) con 6 filas: Servidor web / Emparejar el celular (QR) / Zap /
+  Video / Guia EPG / Actualizar playlist.
 - **Server web apagable**: al arrancar la app el server esta **apagado**; se prende desde Ajustes
   (o con OK en la pantalla de emparejamiento) y se apaga al salir de la app.
 - **Encuadre del video**: Ajustar / Rellenar / Ampliar (desde Ajustes; es runtime, no se persiste).
@@ -72,22 +83,24 @@ IP `192.168.1.18:5555` (ADB por WiFi; cambio desde `192.168.1.20` el 26/10/2026)
 - **Room 2.7.2 + KSP 2.0.21-1.0.28**. `KzStore` queda como fachada (`StateFlow<PersistedState>`),
   pero las escrituras son `suspend`, se serializan con un `Mutex` y se aplican en `Dispatchers.IO`
   dentro de `database.withTransaction`.
-- **Esquema v3** (`app-tv/app/schemas/`): `playlists` (incluye el M3U que sube el companion),
-  `favorites`, `device_tokens`, `app_settings`, `quality_preferences`, `variant_states`,
-  `epg_programs` (+ `epg_cache_meta`) y `watch_history` (top 500 reproducciones).
+- **Esquema v5** (`app-tv/app/schemas/`): `playlists` (incluye el M3U que sube el companion y
+  `lastRefreshAt`), `favorites`, `device_tokens`, `app_settings`, `quality_preferences`,
+  `variant_states`, `epg_programs` (+ `epg_cache_meta`), `watch_history` (top 500
+  reproducciones) y `channel_numbers` (numero estable por canal).
 - **Migracion del JSON legado**: se importa una sola vez (solo si no existe la fila de settings) y
   en una transaccion; el archivo pasa a `kz-state.json.room-backup`. Un JSON invalido queda como
   `.invalid` y uno sobrante con Room ya cargado como `.stale-room-backup`.
-- **Migraciones Room**: `1→2` (columna `content` + tablas de EPG/historial) y `2→3` (EPG con
-  `ordinal` para conservar el orden del XMLTV). Los esquemas exportados por KSP alimentan el
-  `MigrationTestHelper` que corre en la TV.
+- **Migraciones Room**: `1→2` (columna `content` + tablas de EPG/historial), `2→3` (EPG con
+  `ordinal` para conservar el orden del XMLTV), `3→4` (URL de la guia EPG en
+  `app_settings`) y `4→5` (`playlists.lastRefreshAt` + tabla `channel_numbers`).
+  Los esquemas exportados por KSP alimentan el `MigrationTestHelper` que corre en la TV.
 - **Cache EPG**: se hashea el XMLTV bundled (SHA-256); si el fingerprint coincide con el guardado,
   se leen los 2.474 programas de Room sin parsear. Medido en la TV: **10,5 s con parseo → 5,5 s con
   cache** (el log dice `EPG listo en ... (cache)`).
 - **Multi-lista**: la tabla `playlists` ya soporta varias fuentes; el contenido de una playlist
   subida por el celular se guarda en Room y sobrevive al reinicio, y el merge del arranque no pisa
   una lista agregada mientras se cargaba la red.
-- **Verificado en la TV** (TCL Smart TV Pro): la base paso de v1 a v3 sin perder favoritos, tokens,
+- **Verificado en la TV** (TCL Smart TV Pro): la base paso de v1 a v5 sin perder favoritos, tokens,
   codigo de emparejamiento, preferencias de calidad ni resoluciones medidas; el token guardado en
   Room sigue sirviendo (`POST /api/favorite` → 200, token invalido → 401).
 
@@ -321,6 +334,9 @@ Como trabajar alrededor:
 - `POST /api/favorite` `{channelId, enabled, token}`.
 - `POST /api/epg` `{url, token}` -> guarda la URL de la guia EPG (vacio = vuelve a la embebida) y la
   recarga al vuelo; responde `{ok, message, programCount, source}`.
+- `POST /api/refresh` `{token}` -> recarga las playlists por URL y devuelve
+  `{ok, added, removed, changed, sourcesRefreshed, sourcesFailed, message}`; **401** sin token y
+  **409** si ya hay un refresh en curso.
 - `POST /api/command` `{type, ...}` -> `key, zap, play, variant, quality, favorite, text, search, category, grid, mosaic, epg`.
   El comando `epg` con `text` = URL cambia la guia; sin `text` = fuerza la recarga.
 - `WS /ws?token=` -> estado por push + comandos.
@@ -339,7 +355,10 @@ Como trabajar alrededor:
 2. ~~**Arreglar el scroll de la grilla**~~ **Hecho (26/10/2026):** el `LazyVerticalGrid` ahora
    recibe `state = gridState` y el scroll desplaza lo justo (calcula el paso de fila con los items
    visibles). Verificado en la TV: el foco ya no se sale de la pantalla. Commit `5de8a5f`.
-3. **Refresh de playlist con diff** (preservar favoritos/ocultos/numeracion por `tvg-id`).
+3. ~~**Refresh de playlist con diff**~~ **Hecho (26/10/2026):** la TV recarga las M3U por URL, calcula
+   el diff contra el catalogo anterior y conserva favoritos, calidad, salud y numeracion con identidad
+   canonica por `tvg-id`. Fila "Actualizar playlist" en Ajustes, `POST /api/refresh` y boton en
+   el companion. Ver seccion 14.
 4. ~~**EPG fresco**~~ **Hecho (26/10/2026 noche):** la app baja la guia de una URL
    configurable (la que publica el pipeline semanal), la cachea en disco (TTL 24 h) y en Room
    (fingerprint SHA-256), y actualiza la guia en caliente sin reinstalar la app. La URL se cambia
@@ -516,13 +535,69 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 
 ### Por donde seguir (proximo chat)
 
-1. **Refresh de playlist con diff** (el otro pendiente de P1): recargar la M3U preservando
-   favoritos, ocultos y numeracion por `tvg-id`.
+1. ~~**Refresh de playlist con diff**~~ **Hecho:** ver seccion 14.
 2. **Publicar el repo** (hoy `git remote -v` no trae ningun remoto) y dejar la URL por defecto de la
    guia (`https://raw.githubusercontent.com/<owner>/<repo>/main/epg/ar.xml.gz`) ya sea como valor
    inicial en el companion o como default en la app.
 3. La **guia lineal de EPG** (P2) y el **selector de lista** (P1) siguen pendientes.
+4. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
+5. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
+   `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
 
+---
+
+## 14 - Cierre de la sesion (26/10/2026, 2a parte de la noche): refresh de playlist con diff
+
+### Que se implemento
+
+- **Identidad canonica** (`core/catalog/ChannelIdentity.kt`): canal logico `c:tvg:<tvg-id base>` (o
+  `c:name:<nombre normalizado>`), feed `v:tvg:<origen>|<tvg-id completo>` (o `v:name:...`).
+  Los IDs legacy (`g:<sha1(nombre)>` y `<sha1(origen|tvg-id|nombre|url)>`) se siguen usando en la
+  API, pero **el estado se guarda y se compara por clave canonica**.
+- **Diff puro** (`core/catalog/PlaylistDiff.kt`): `added` / `removed` / `changed`
+  (metadatos del grupo + huella semantica de las variantes: URL, tipo, label, nombre, calidad, region y
+  headers; la salud y la resolucion medida quedan fuera) y `rekeyed` (emparejamiento 1 a 1,
+  determinista, solo si hay una variante compartida).
+- **Migracion de estado** (`data/ChannelStateMigration.kt`): traduce favoritos, preferencia de
+  calidad, salud, resolucion medida, numeracion, ultimo grupo y ultimo canal del catalogo anterior al
+  nuevo; deja los favoritos huerfanos, borra las preferencias sin destino e invalida la salud de las
+  variantes cuya URL cambio.
+- **Room v5**: `playlists.lastRefreshAt` + tabla `channel_numbers`, con migracion `4→5`.
+- **Refresh** (`TvController.refreshPlaylists()`): descarga **por fuente** en `Dispatchers.IO`; la
+  fuente que falla **conserva su catalogo anterior**, las que salen bien se aplican juntas, un `Mutex`
+  impide dos refresh simultaneos y al final se reconcilia el canal y el foco actual.
+- **Entradas**: fila "Actualizar playlist" en AJUSTES (6 filas), `POST /api/refresh` (401 sin token,
+  409 si ya hay uno en curso) y boton "Actualizar playlist" en el companion.
+
+### Verificado en la TV real (TCL Smart TV Pro, `192.168.1.18`)
+
+| Prueba | Resultado |
+|---|---|
+| AJUSTES → "Actualizar playlist" | `playlistRefreshing=true` → cartel `Playlists actualizadas: +0 / -0 / ~0` |
+| `POST /api/refresh` con token | `{"ok":true,"added":0,"removed":0,"changed":0,"sourcesRefreshed":1,"sourcesFailed":0,...}` |
+| `POST /api/refresh` sin token | **401** `token invalido` |
+| Favorito (tecla amarilla) + refresh | sigue marcado (`favorite=true`); en Room queda `c:tvg:fifaplus.uk` |
+| Numeracion | 201 canales con numero estable (#1…#201) en `channel_numbers` |
+| Base en la TV | `user_version=5`, `playlists.lastRefreshAt` con la hora del refresh, 49 KB de M3U cacheados |
+| Companion | la TV sirve `index-BxxphoWd.js` (el bundle nuevo) con el boton y el `POST /api/refresh` |
+| Grilla | 201 canales / 206 feeds con los numeros y las categorias, foco y scroll como antes |
+| Tests | **92 unitarios verdes** (+10) + **5 instrumentados** verdes en la TV (migracion 1→5) |
+
+### Estado al dejar esta sesion
+
+- Rama `main` **sin remoto**: el usuario pidio expresamente **no publicar el repo todavia**; se sigue
+  trabajando en local y la publicacion queda para el final.
+- La app queda **instalada** en la TV (el APK se reinstalo porque `connectedDebugAndroidTest`
+  desinstala al terminar) y el **server web encendido** en `http://192.168.1.18:8080`.
+- La base de la TV quedo como la de una app nueva (schema v5, 201 canales, sin favoritos).
+
+### Por donde seguir (proximo chat)
+
+1. **Publicar el repo** y dejar la URL por defecto de la guia
+   (`https://raw.githubusercontent.com/<owner>/<repo>/main/epg/ar.xml.gz`) como valor inicial en el
+   companion o default en la app. Es el pendiente que el usuario dejo **para el final**.
+2. El **selector de lista** (P1) y la **guia lineal de EPG** (P2) siguen pendientes.
 3. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
 4. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
    `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
+

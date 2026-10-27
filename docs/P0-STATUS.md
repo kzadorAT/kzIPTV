@@ -1,6 +1,6 @@
 # Estado P0 — kzIPTV (spike funcional)
 
-Fecha: 25/10/2026 · Estado: **P0 validada en TV real** · APK: `app-debug.apk` 18,9 MB
+Fecha: 26/10/2026 · Estado: **P0 validada en TV real** · APK: `app-debug.apk` 18.6 MB
 
 La P0 tuvo como objetivo responder "¿esto es viable?" con **código real, no maquetas**:
 app Android TV que arranca, lee la playlist real de iptv-org, reproduce HLS/DASH, hace zapping
@@ -27,7 +27,8 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
 | Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
 | Comparar canales (mosaico de miniaturas) | ✅ | **hecho en P1**: grilla de 16 tiles con un frame congelado por canal. **No hay PiP en Android TV** y el decoder de hardware es único → se congela un frame por canal, no se transmiten varios streams (ver §10) |
-| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema v4 (con la URL de la guía EPG), import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
+| Refresh de playlist con diff | ✅ | **hecho en P1**: la TV recarga las M3U por URL, calcula el diff contra el catálogo anterior y **conserva favoritos, calidad, salud y numeración** aunque la playlist cambie de nombre o URL (ver §15) |
+| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema **v5** (URL de la guía EPG, marca de refresh y números de canal), import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
 
 ---
 
@@ -672,3 +673,57 @@ La guía venía embebida en el APK, así que actualizarla exigía compilar y rei
 
 El detalle del diseño está en [docs/PLAN.md](PLAN.md) §16 y el cierre de la sesión en
 [docs/HANDOVER.md](HANDOVER.md) §13.
+
+---
+
+## 15 · Refresh de playlist con diff: recargar sin perder nada (26/10/2026)
+
+La playlist venía embebida en el APK: cambiarla exigía compilar y reinstalar. Ahora la TV **vuelve a bajar
+las M3U por URL** y las cambia en caliente, conservando todo el estado del usuario.
+
+### El problema que resuelve
+
+Los identificadores internos se calculaban con hashes del **nombre** y la **URL**: `g:<sha1(nombre)>` para el
+canal lógico y `<sha1(origen|tvg-id|nombre|url)>` para el feed. Si el proveedor renombra un canal o cambia
+la URL del stream, esos identificadores cambian aunque la señal sea la misma, y el refresh dejaba sin
+favoritos, sin calidad elegida y sin numeración a medio catálogo.
+
+### La identidad canónica
+
+| Pieza | Clave | Regla |
+|---|---|---|
+| `core/catalog/ChannelIdentity.kt` | canal lógico | `c:tvg:<tvg-id base en minúsculas>` (la parte antes de ``); si no hay tvg-id, `c:name:<nombre normalizado>` |
+| | feed (variante) | `v:tvg:<origen>|<tvg-id completo>`; si no hay tvg-id, `v:name:<origen>|<nombre normalizado>` |
+| | normalización | minúsculas + todo lo que no sea `a-z0-9` fuera (igual que el agrupador) |
+
+Los IDs legacy se **siguen usando en la API** (compatibilidad), pero el estado (favoritos, preferencia de
+calidad, salud, resolución medida, numeración, último canal) se guarda y se compara por **clave canónica**.
+
+### Qué se implementó
+
+| Pieza | Qué hace |
+|---|---|
+| `core/catalog/PlaylistDiff.kt` | diff puro: `added` / `removed` / `changed` (metadatos del grupo + huella semántica de las variantes: URL, tipo, label, nombre, calidad, región y headers; **excluye** salud y resolución medida) y `rekeyed` (emparejamiento 1 a 1 y determinista cuando hay una variante compartida) |
+| `data/ChannelStateMigration.kt` | traduce el estado legacy → canónico usando el catálogo **anterior** y el nuevo; deja los favoritos huérfanos (pueden volver), borra la preferencia cuyo destino ya no existe e invalida la salud/resolución de las variantes cuya URL cambió |
+| `data/room` **v5** | `playlists.lastRefreshAt` + tabla `channel_numbers` (`channelKey` → `number`) con migración 4→5 |
+| `ui/TvController.kt` | `refreshPlaylists()`: descarga **por fuente** en `Dispatchers.IO`, una fuente que falla **conserva su catálogo anterior**, mutex para que no haya dos refresh a la vez, diff único sobre el catálogo combinado y reconciliación del canal/foco actual |
+| `server/EmbeddedServer.kt` | `POST /api/refresh` `{token}` → `{ok, added, removed, changed, sourcesRefreshed, sourcesFailed, message}`; 401 sin token, 409 si ya hay un refresh en curso |
+| `ui/TvRoot.kt` | fila **"Actualizar playlist"** en AJUSTES (6 filas, con el resultado del diff abajo) y las estrellas de favoritos por clave canónica |
+| `companion/src/app.tsx` | botón **"Actualizar playlist"** con el resultado del diff y las fuentes que fallaron |
+
+### Verificado en la TV real (TCL Smart TV Pro, 26/10/2026)
+
+| Prueba | Resultado |
+|---|---|
+| AJUSTES → "Actualizar playlist" | `playlistRefreshing=true` mientras corre y después el cartel `Playlists actualizadas: +0 / -0 / ~0` |
+| `POST /api/refresh` con token | `{"ok":true,"added":0,"removed":0,"changed":0,"sourcesRefreshed":1,"sourcesFailed":0,...}` |
+| `POST /api/refresh` sin token | **401** `token invalido` |
+| Favorito + refresh | el favorito marcado con la tecla amarilla sigue **marcado** después del refresh (`favorite=true`, guardado en Room como `c:tvg:fifaplus.uk`) |
+| Numeración | 201 canales con número estable (#1…#201) en `channel_numbers` |
+| Base de datos en la TV | `user_version=5`, tabla `channel_numbers` con 201 filas, `playlists.lastRefreshAt` con la hora del refresh |
+| Companion | el bundle nuevo (`index-BxxphoWd.js`) se sirve en `http://192.168.1.18:8080/` y trae el botón y el `POST /api/refresh` |
+| Tests | **92 unitarios verdes** (+10: diff, migración de estado y numeración estable) + **5 instrumentados** verdes en la TV (la migración ahora es 1→5) |
+
+El detalle del diseño está en [docs/PLAN.md](PLAN.md) (sección "Diseño P1 · refresh de playlist con diff") y el
+cierre de la sesión en [docs/HANDOVER.md](HANDOVER.md) §14.
+

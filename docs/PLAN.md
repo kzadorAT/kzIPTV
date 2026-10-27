@@ -209,10 +209,42 @@ Sin login: alcanza el token de emparejamiento; todo lo vivo va por WebSocket con
 - `watch_history(id, groupId, channelId, variantId, watchedAt)` — top 500 reproducciones.
 - Migraciones `1→2` y `2→3` + import one-shot del JSON legado (`kz-state.json.room-backup`).
 
-**Pendiente:** tabla `channels` normalizada (hoy el catalogo se arma en memoria), `lastRefresh`/`enabled`
+**Pendiente:** tabla `channels` normalizada (hoy el catalogo se arma en memoria), `enabled`
 por playlist, WorkManager con diff por `tvg-id` y settings en DataStore (hoy viven en `app_settings`).
 
 Refresh de playlist: cada 6 h (WorkManager) con diff por tvg-id → nombre que **preserva favoritos, ocultos y numeración**.
+
+### Diseño P1 · refresh de playlist con diff (26/10/2026) — **hecho y verificado en la TV**
+
+**Estado:** implementado, compilado, instalado y verificado en la TCL Smart TV Pro el 26/10/2026
+(92 tests unitarios + 5 instrumentados verdes). Ver `docs/P0-STATUS.md` §15 y `docs/HANDOVER.md` §14.
+
+**Corte de esta primera implementacion:** refresh manual desde Ajustes y desde el companion; el
+catalogo sigue armandose en memoria, pero cada M3U descargada queda cacheada en Room. La tabla
+`channels` normalizada, el refresh automatico cada 6 h y la edicion de ocultos/numeracion quedan
+como etapas posteriores.
+
+**Identidad canonica (independiente del nombre y de la URL):**
+
+- Canal logico: `c:tvg:<tvg-id-base>` cuando existe `tvg-id`; si no, `c:name:<nombre-normalizado>`.
+- Variante/feed: `v:tvg:<source-id>|<tvg-id-completo>`; si no, `v:name:<source-id>|<nombre-normalizado>`.
+- Los IDs actuales `g:<hash-del-nombre>` y los IDs de feed (que incluyen la URL) se migran una vez
+  a las claves canonicas. Favoritos, calidad elegida, salud, resolucion medida y ultimo canal se
+  guardan con esas claves, por lo que sobreviven a cambios de nombre o URL.
+
+**Diff:** se calcula sobre canales logicos. Un canal con la misma clave pero distinta URL, logo,
+categorias o variantes cuenta como *modificado*; una clave nueva cuenta como *agregado* y una que
+desaparece como *eliminado*. Las claves se reasignan si una misma variante migra de un canal a otro.
+
+**Fallback seguro:** si una descarga falla se conserva la version anterior de esa fuente y del
+catalogo. Si una lista llega vacia se la considera invalida y no se reemplaza la cache.
+
+**Persistencia:** Room v5 agrega `lastRefreshAt` a `playlists` y una tabla `channel_numbers`.
+El M3U descargado se guarda en `playlists.content`; por eso el arranque siguiente usa la cache y
+el refresh explicito trae los cambios de iptv-org u otra URL.
+
+**UX:** Ajustes → "Actualizar playlist" y un endpoint autenticado del companion. Ambos muestran
+altas, bajas y cambios; una actualizacion concurrente se rechaza.
 
 ## 8 · Playback y casos borde
 
@@ -402,7 +434,8 @@ sentido con una playlist multi-audio: de 24 streams medidos, 0 pistas de audio y
 ## 16 · EPG fresco (P1) — **hecho el 26/10/2026**
 
 Este es el pendiente que se retoma después del handover del 26/10/2026 (§9, ítem 4). El otro
-pendiente de P1 ("refresh de playlist con diff") queda para el siguiente chat.
+pendiente de P1 ("refresh de playlist con diff") **quedó implementado y verificado la misma noche**
+(diseño en la sección "Diseño P1 · refresh de playlist con diff", detalle en `docs/P0-STATUS.md` §15).
 
 **Qué se ve en la TV**: la guía se actualiza sola, sin reinstalar el APK. El usuario pega desde el
 celular (companion) la URL del XMLTV que publica el pipeline semanal (`epg/ar.xml.gz`) y la TV
