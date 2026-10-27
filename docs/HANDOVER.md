@@ -744,8 +744,9 @@ guia estaba vencida y la app no tenia "ahora" que mostrar (el error era real, no
 
 - La TV **cambio de IP**: ahora es `192.168.1.11:5555` (antes `192.168.1.18:5555`).
 - El APK queda instalado en la TV, con el server web **encendido** en `http://192.168.1.11:8080`.
-- La base de la TV quedo en el esquema **v6**, con las dos listas de la prueba ("iptv-org · Argentina"
-  y "prueba") y un favorito en "Canal de Prueba 1" (#202).
+- La base de la TV quedo en el esquema **v6** y con la **instalacion limpia** (los tests instrumentados
+  borran los datos de la app): quedo solo la lista embebida, 201 canales (206 feeds) y la guia EPG de
+  7 dias (7.149 programas). Para volver a tener la lista de prueba: `POST /api/source` con el M3U.
 - El repo quedo publico con la guia de 7 dias ya publicada.
 
 ### 17.5 - Por donde seguir (proximo chat)
