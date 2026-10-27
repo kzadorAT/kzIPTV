@@ -35,7 +35,7 @@ jobs:
             --playlist fixtures/ar.m3u \
             --channels-index .epg/sites/mi.tv \
             --out epg/ar.xml.gz \
-            --days 2 \
+            --days 7 \
             --concurrency 4
 
       - name: Publicar
