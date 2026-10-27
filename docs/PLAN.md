@@ -246,6 +246,32 @@ el refresh explicito trae los cambios de iptv-org u otra URL.
 **UX:** Ajustes → "Actualizar playlist" y un endpoint autenticado del companion. Ambos muestran
 altas, bajas y cambios; una actualizacion concurrente se rechaza.
 
+### Diseño P1 · publicacion del repo, guia EPG por defecto y fluidez de la grilla (26/10/2026)
+
+**Estado:** en curso.
+
+**Publicacion:** el repo pasa a GitHub (`https://github.com/kzadorAT/kzIPTV`, rama `main`) y queda
+publico para que la app baje la guia sin pedirle nada al usuario. El remoto `origin` queda
+configurado en el checkout local y los commits usan `fabricio.loaiza@outlook.com`.
+
+**Guia EPG por defecto:** la URL publica del repo
+(`https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz`) pasa a ser el valor por
+defecto: si el usuario no configuro otra, la app la baja sola (cache de 24 h en disco + Room) y cae
+a la guia embebida si la red falla. El companion muestra esa misma URL. El pipeline semanal gana
+`permissions: contents: write` para poder publicar el `.gz`.
+
+**Fluidez de la grilla:** el problema no es el reproductor sino que cada tecla del D-pad recompone
+**toda** la grilla (el foco se leia arriba y se pasaba a las 20 tarjetas visibles) y que al volver
+de la pantalla de reproduccion la grilla se reconstruia desde cero.
+
+| Cambio | Por que |
+|---|---|
+| `LazyGridState`/`LazyListState` viven en `TvRoot` (arriba de la pantalla) | al volver a la grilla se conserva la posicion: no se recompone desde el inicio |
+| Lista filtrada memorizada (`remember(catalog, category)`) | se evita rearmar la lista en cada recomposicion |
+| Cada tarjeta deriva su estado (`derivedStateOf`) | mover el foco recompone solo las 2 tarjetas que cambian, no las 20 visibles |
+| El foco se observa con `collect` (fuera de la composicion) | la grilla no se invalida entera en cada tecla |
+| Scroll instantaneo y alineado a la fila | en TV una animacion larga se siente como lag |
+
 ## 8 · Playback y casos borde
 
 | Caso | Manejo |

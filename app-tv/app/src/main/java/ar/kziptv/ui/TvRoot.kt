@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.mutableLongStateOf
@@ -35,6 +36,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
@@ -45,6 +47,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
@@ -94,10 +97,17 @@ fun KzTheme(content: @Composable () -> Unit) {
 fun TvRoot(controller: TvController) {
     val screen by controller.screen.collectAsState()
     KeepScreenOn()
+
+    // El estado de scroll de la grilla vive ACIMA de la pantalla. Si se creara
+    // dentro de GridScreen, al salir al reproductor se perdia y al volver la
+    // grilla se recomponia desde cero: por eso "abrir la grilla" se sentia lento.
+    val gridState = rememberLazyGridState()
+    val chipState = rememberLazyListState()
+
     when (screen) {
         Screen.SETUP -> SetupScreen(controller)
         Screen.PLAYER -> PlayerScreen(controller)
-        Screen.GRID -> GridScreen(controller)
+        Screen.GRID -> GridScreen(controller, gridState, chipState)
         Screen.QUALITY -> QualityScreen(controller)
         Screen.SEARCH -> SearchScreen(controller)
         Screen.MOSAIC -> MosaicScreen(controller)
@@ -262,17 +272,24 @@ private fun BannerOverlay(
 }
 
 @Composable
-fun GridScreen(controller: TvController) {
+fun GridScreen(
+    controller: TvController,
+    gridState: LazyGridState,
+    chipState: LazyListState
+) {
     val catalog by controller.catalog.collectAsState()
     val selectedCategory by controller.category.collectAsState()
-    val current by controller.currentGroup.collectAsState()
-    val focusedId by controller.focusedGroupId.collectAsState()
-    val videoWidth by controller.videoWidth.collectAsState()
-    val videoHeight by controller.videoHeight.collectAsState()
-    val gridState = rememberLazyGridState()
-    val chipState = rememberLazyListState()
     val focusedCategory by controller.focusedCategory.collectAsState()
     val exitHint by controller.exitHintVisible.collectAsState()
+
+    // Estos estados se crean una sola vez y cada tarjeta deriva el valor que
+    // necesita. Mover el foco NO recompone la grilla entera: solo se recompone
+    // la tarjeta que gana el foco y la que lo pierde.
+    val focusedIdState = controller.focusedGroupId.collectAsState()
+    val favoritesState = controller.favorites.collectAsState()
+    val currentState = controller.currentGroup.collectAsState()
+    val videoWidthState = controller.videoWidth.collectAsState()
+    val videoHeightState = controller.videoHeight.collectAsState()
 
     // Columnas EXACTAS de la grilla: el D-pad del controller necesita saber
     // cuantas hay por fila para mover el foco de fila en fila.
@@ -283,42 +300,26 @@ fun GridScreen(controller: TvController) {
     }
     LaunchedEffect(columns) { controller.setGridColumns(columns) }
 
-    val list = catalog.inCategory(selectedCategory)
+    // La lista filtrada se memoriza: sin esto se reconstruye en cada
+    // recomposicion de la grilla (y obliga a recomponer las tarjetas).
+    val list = remember(catalog, selectedCategory) { catalog.inCategory(selectedCategory) }
 
     // El foco lo maneja el controller (navegacion determinista). Aca solo se
     // scrollea lo justo para que el canal enfocado quede a la vista.
     // OJO: el estado DEBE pasarse al LazyVerticalGrid (si no, el scroll no existe).
-    LaunchedEffect(focusedId, list.size, selectedCategory) {
-        val index = list.indexOfFirst { it.id == focusedId }
-        if (index < 0) return@LaunchedEffect
-        val info = gridState.layoutInfo
-        val visible = info.visibleItemsInfo
-        val target = visible.firstOrNull { it.index == index }
-        if (target != null) {
-            val top = target.offset.y
-            val bottom = top + target.size.height
-            val delta = when {
-                bottom > info.viewportEndOffset -> bottom - info.viewportEndOffset
-                top < info.viewportStartOffset -> top - info.viewportStartOffset
-                else -> 0
-            }
-            if (delta != 0) gridState.scrollBy(delta.toFloat())
-        } else {
-            // El item enfocado todavia no esta compuesto: se avanza lo justo
-            // (una fila por paso) para que entre en pantalla.
-            val pitch = visible.zipWithNext()
-                .firstOrNull { (a, b) -> b.offset.y > a.offset.y }
-                ?.let { (a, b) -> b.offset.y - a.offset.y }
-                ?: visible.firstOrNull()?.size?.height
-                ?: return@LaunchedEffect
-            val anchor = if (index > (visible.lastOrNull()?.index ?: -1)) {
-                visible.lastOrNull()
-            } else {
-                visible.firstOrNull()
-            } ?: return@LaunchedEffect
-            val delta = (index - anchor.index) * pitch
-            if (delta != 0) gridState.scrollBy(delta.toFloat())
+    // El foco se observa con collect (FUERA de la composicion): asi la grilla
+    // no se invalida entera en cada tecla, solo la tarjeta que cambia.
+    LaunchedEffect(gridState, list) {
+        controller.focusedGroupId.collect { focusedId ->
+            alignFocusedItem(gridState, list, focusedId)
+            val latency = android.os.SystemClock.elapsedRealtime() - controller.lastFocusChangeAt
+            android.util.Log.d("KzGrid", "foco alineado en ${latency}ms")
         }
+    }
+
+    // Cambiar de categoria vuelve al principio de la lista.
+    LaunchedEffect(selectedCategory) {
+        gridState.scrollToItem(0)
     }
     LaunchedEffect(focusedCategory, catalog.categories.size) {
         val chips = listOf("") + catalog.categories
@@ -378,17 +379,37 @@ fun GridScreen(controller: TvController) {
             ) {
                 items(list.size, key = { index -> list[index].id }) { index ->
                     val group = list[index]
-                    val measured = if (current?.id == group.id && videoWidth > 0) {
-                        "${videoHeight}p"
-                    } else {
-                        group.variants.firstOrNull { it.channelId == group.activeVariantId }
-                            ?.measured?.takeIf { it.isNotBlank() }?.let { it.substringAfter('x') + "p" } ?: ""
+                    // Cada tarjeta deriva su propio estado: al mover el foco solo
+                    // se recompone la que entra y la que sale (no las 20 visibles).
+                    val focused by remember(group.id) {
+                        derivedStateOf {
+                            focusedIdState.value == group.id && focusedCategory == null
+                        }
+                    }
+                    val favorite by remember(group.id) {
+                        derivedStateOf { controller.isFavorite(group, favoritesState.value) }
+                    }
+                    val active by remember(group.id) {
+                        derivedStateOf { currentState.value?.id == group.id }
+                    }
+                    val measured by remember(group.id) {
+                        derivedStateOf {
+                            val currentGroup = currentState.value
+                            if (currentGroup?.id == group.id && videoWidthState.value > 0) {
+                                "${videoHeightState.value}p"
+                            } else {
+                                group.variants.firstOrNull { it.channelId == group.activeVariantId }
+                                    ?.measured?.takeIf { it.isNotBlank() }
+                                    ?.let { it.substringAfter('x') + "p" } ?: ""
+                            }
+                        }
                     }
                     ChannelCard(
+                        controller = controller,
                         group = group,
-                        favorite = controller.isFavorite(group),
-                        active = current?.id == group.id,
-                        focused = focusedId == group.id && focusedCategory == null,
+                        favorite = favorite,
+                        active = active,
+                        focused = focused,
                         measuredQuality = measured,
                         onClick = {
                             controller.setFocused(group.id)
@@ -424,6 +445,48 @@ fun GridScreen(controller: TvController) {
             }
         }
     }
+}
+
+/**
+ * Mantiene a la vista el canal enfocado: scrollea lo justo (una fila por paso)
+ * y sin animacion, que en TV se siente mas rapido que un scroll suave.
+ */
+private suspend fun alignFocusedItem(
+    gridState: LazyGridState,
+    list: List<ChannelGroup>,
+    focusedId: String?
+) {
+    if (focusedId.isNullOrBlank()) return
+    val index = list.indexOfFirst { it.id == focusedId }
+    if (index < 0) return
+    val info = gridState.layoutInfo
+    val visible = info.visibleItemsInfo
+    val target = visible.firstOrNull { it.index == index }
+    if (target != null) {
+        val top = target.offset.y
+        val bottom = top + target.size.height
+        val delta = when {
+            bottom > info.viewportEndOffset -> bottom - info.viewportEndOffset
+            top < info.viewportStartOffset -> top - info.viewportStartOffset
+            else -> 0
+        }
+        if (delta != 0) gridState.scrollBy(delta.toFloat())
+        return
+    }
+    // El item enfocado todavia no esta compuesto: se avanza lo justo
+    // (una fila por paso) para que entre en pantalla.
+    val pitch = visible.zipWithNext()
+        .firstOrNull { (a, b) -> b.offset.y > a.offset.y }
+        ?.let { (a, b) -> b.offset.y - a.offset.y }
+        ?: visible.firstOrNull()?.size?.height
+        ?: return
+    val anchor = if (index > (visible.lastOrNull()?.index ?: -1)) {
+        visible.lastOrNull()
+    } else {
+        visible.firstOrNull()
+    } ?: return
+    val delta = (index - anchor.index) * pitch
+    if (delta != 0) gridState.scrollBy(delta.toFloat())
 }
 
 /**
@@ -777,6 +840,7 @@ private fun CategoryChip(
 
 @Composable
 private fun ChannelCard(
+    controller: TvController,
     group: ChannelGroup,
     favorite: Boolean,
     active: Boolean,
@@ -784,6 +848,7 @@ private fun ChannelCard(
     measuredQuality: String,
     onClick: () -> Unit
 ) {
+    controller.countCardComposition()
     val bestQuality = group.variants.firstOrNull()?.quality?.uppercase().orEmpty()
     val quality = if (measuredQuality.isNotBlank()) measuredQuality else bestQuality
 

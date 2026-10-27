@@ -10,6 +10,13 @@ import java.util.zip.GZIPInputStream
  */
 object EpgSource {
 
+    /**
+     * Guia publica por defecto: la que publica el repo (el pipeline semanal
+     * commitea epg/ar.xml.gz). Es la que usa la app si no se configuro otra.
+     */
+    const val DEFAULT_PUBLIC_URL =
+        "https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz"
+
     /** La guia se considera vieja a las 24 h (el pipeline publica una vez por semana). */
     const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
 

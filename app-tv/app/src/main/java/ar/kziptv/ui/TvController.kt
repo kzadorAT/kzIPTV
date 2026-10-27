@@ -165,7 +165,7 @@ class TvController(
     private val epgRepo = EpgRepository(context)
 
     /** URL configurada de la guia EPG (espejo del store para la UI). */
-    val epgUrl = MutableStateFlow("")
+    val epgUrl = MutableStateFlow(EpgSource.DEFAULT_PUBLIC_URL)
 
     /** De donde sale la guia actual: "embebido" o "remoto". */
     val epgSource = MutableStateFlow("embebido")
@@ -503,7 +503,8 @@ class TvController(
             val resolvedPairingCode = persistedState.pairingCode.ifBlank { generateCode() }
             pairingCode.value = resolvedPairingCode
             zapFavoritesOnly.value = persistedState.zapFavoritesOnly
-            epgUrl.value = persistedState.epgUrl
+            // Sin URL guardada se usa la guia publica del repo.
+            epgUrl.value = persistedState.epgUrl.ifBlank { EpgSource.DEFAULT_PUBLIC_URL }
             val sources = persistedState.sources.ifEmpty {
                 listOf(PersistedSource(id = BUNDLED_ID, name = "iptv-org \u00b7 Argentina", url = BUNDLED_URL, bundled = true))
             }
@@ -762,12 +763,10 @@ class TvController(
     }
 
     private suspend fun loadEpg() {
-        val remoteUrl = store.state.value.epgUrl.trim()
-        if (remoteUrl.isNotBlank()) {
-            loadRemoteEpg(remoteUrl, forceDownload = false)
-        } else {
-            loadBundledEpg()
-        }
+        // Sin URL configurada se usa la guia publica del repo; la embebida queda
+        // como respaldo si la red falla (loadRemoteEpg ya la usa).
+        val remoteUrl = store.state.value.epgUrl.trim().ifBlank { EpgSource.DEFAULT_PUBLIC_URL }
+        loadRemoteEpg(remoteUrl, forceDownload = false)
     }
 
     /** Guia embebida en el APK: la que se usa si no hay URL remota configurada. */
@@ -870,7 +869,7 @@ class TvController(
             setStatus("La URL de la guia EPG no es valida", sticky = true)
             return false
         }
-        epgUrl.value = clean
+        epgUrl.value = clean.ifBlank { EpgSource.DEFAULT_PUBLIC_URL }
         scope.launch {
             store.update { it.copy(epgUrl = clean) }
             epgRepo.clearCache()
@@ -882,11 +881,7 @@ class TvController(
     /** Fuerza la recarga de la guia (fila "Guia EPG" de Ajustes o comando del companion). */
     fun refreshEpg() {
         scope.launch {
-            val url = store.state.value.epgUrl.trim()
-            if (url.isBlank()) {
-                setStatus("Configura la URL de la guia EPG desde el celular", sticky = true)
-                return@launch
-            }
+            val url = store.state.value.epgUrl.trim().ifBlank { EpgSource.DEFAULT_PUBLIC_URL }
             loadRemoteEpg(url, forceDownload = true)
         }
     }
@@ -894,12 +889,11 @@ class TvController(
     /** Texto de la fila "Guia EPG" de Ajustes. */
     fun epgLabel(): String {
         if (epgRefreshing.value) return "Actualizando…"
-        if (epgUrl.value.isBlank()) return "Sin URL (embebida)"
         val programs = epg.value.programs.size
         return if (epgSource.value == "remoto") {
             "Remota · ${programs} programas"
         } else {
-            "Remota configurada"
+            "Del repo · ${programs} programas"
         }
     }
 
@@ -1011,10 +1005,16 @@ class TvController(
         )
     }
 
-    fun isFavorite(group: ChannelGroup): Boolean =
-        favorites.value.contains(group.stateKey) ||
-            favorites.value.contains(group.id) ||
-            group.variants.any { favorites.value.contains(it.stateKey) || favorites.value.contains(it.channelId) }
+    fun isFavorite(group: ChannelGroup): Boolean = isFavorite(group, favorites.value)
+
+    /**
+     * Igual que [isFavorite] pero con el set ya leido: la grilla lo usa para
+     * derivar el estado de cada tarjeta sin releer el flow por tarjeta.
+     */
+    fun isFavorite(group: ChannelGroup, favorites: Set<String>): Boolean =
+        favorites.contains(group.stateKey) ||
+            favorites.contains(group.id) ||
+            group.variants.any { favorites.contains(it.stateKey) || favorites.contains(it.channelId) }
 
     fun toggleFavorite(groupId: String? = null) {
         val id = groupId ?: focusedGroupId.value ?: currentGroup.value?.id ?: return
@@ -1772,6 +1772,23 @@ class TvController(
         }
     }
 
+    /**
+     * Contador de recomposiciones de tarjeta: lo usa el diagnostico "KzGrid"
+     * para ver cuantas tarjetas se redibujan por cada tecla del D-pad.
+     */
+    @Volatile
+    private var gridCardCompositions = 0
+
+    /** Lo llama cada tarjeta al componerse. */
+    fun countCardComposition() {
+        gridCardCompositions++
+    }
+
+    /** Momento del ultimo cambio de foco (elapsedRealtime). */
+    @Volatile
+    var lastFocusChangeAt: Long = 0L
+        private set
+
     private fun moveGridFocus(code: Int) {
         val chip = focusedCategory.value
         if (chip != null) {
@@ -1806,10 +1823,20 @@ class TvController(
             return
         }
         focusedGroupId.value = list[move.index].id
+        lastFocusChangeAt = android.os.SystemClock.elapsedRealtime()
+        gridCardCompositions = 0
         android.util.Log.d(
             "KzNav",
             "grid code=$code -> ${list[move.index].name} (idx ${move.index}, cols $columns)"
         )
+        // Diagnostico de fluidez: cuantas tarjetas se recomponen por tecla.
+        scope.launch {
+            delay(300)
+            android.util.Log.d(
+                "KzGrid",
+                "tras la tecla: $gridCardCompositions tarjetas recompuestas"
+            )
+        }
     }
 
     private fun moveQualityFocus(code: Int) {
@@ -1925,7 +1952,7 @@ class TvController(
                     }
                 )
             },
-            epgUrl = store.state.value.epgUrl,
+            epgUrl = epgUrl.value,
             epgSource = epgSource.value,
             epgUpdatedAt = epgUpdatedAt.value,
             epgRefreshing = epgRefreshing.value,
