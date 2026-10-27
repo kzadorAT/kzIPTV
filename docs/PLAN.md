@@ -507,6 +507,61 @@ cache `5.518 ms (cache)`, descarga + parseo `5.510 ms` y arranque con todo cache
 `831 ms (cache disco + cache Room)`. Con una URL rota la app avisa `HTTP 404` y **mantiene la
 guía que ya tenía**. Detalle exacto en `docs/HANDOVER.md` §13.
 
-**Pendiente**: la URL por defecto (el repo todavía no está publicado: `git remote -v` no trae
-ningún remoto) y el resto de la fila de Ajustes (persistencia del server, selector de lista).
+**Pendiente**: solo queda el resto de la fila de Ajustes (persistencia del server y selector de
+lista). La URL por defecto ya está hecha: el repo se publicó el 26/10/2026 y
+`EpgSource.DEFAULT_PUBLIC_URL` apunta al `.gz` que publica el pipeline semanal (ver §17).
+
+---
+
+## 17 · Diseño P1 · selector de lista (27/10/2026)
+
+Este es el último pendiente de P1 (ver `docs/HANDOVER.md` §9, ítem 5): la tabla `playlists` de Room
+ya soporta varias listas, pero la TV las mezclaba todas en un solo catálogo y no había forma de
+elegir cuáles se miran. Con el refresh con diff ya hecho (§14), faltaba solo la UI.
+
+**Qué se ve en la TV**: en **AJUSTES** aparece una fila **"Listas de canales"** que abre una pantalla
+nueva con una fila por playlist: el nombre, cuántos canales tiene, de dónde sale (embebida / URL /
+archivo), cuándo se actualizó por última vez y si está **ACTIVA**. Con **OK** se activa o se
+desactiva; con **OK largo** se quita la lista (pide confirmación). BACK vuelve a Ajustes.
+
+### Decisiones
+
+1. **Cada lista tiene su propio interruptor, guardado en Room** (`playlists.enabled`, esquema v6): lo que
+   el usuario mira es del usuario, no de la sesión.
+2. **El catálogo se arma solo con las listas activas**: una lista apagada no aporta canales ni feeds
+   (tampoco variantes de respaldo de otras señales).
+3. **Apagar una lista NO borra el estado del usuario**: los favoritos, la calidad elegida, la salud de
+   cada feed y los números de canal se conservan por clave canónica y vuelven intactos al reactivarla.
+   Por eso el rebuild del catálogo al alternar listas no usa la migración que poda el estado: esa poda
+   es para el refresh, donde el canal puede haber desaparecido de verdad.
+4. **No se puede apagar la última lista activa**: la TV siempre tiene algo que mostrar (si no, la
+   grilla quedaría vacía y no habría a dónde ir con el OK).
+5. **Lo apagado no se descarga**: al arrancar solo se bajan las listas activas; una lista apagada se
+   carga al activarla (del contenido cacheado si lo hay, si no por URL). El refresh manual
+   ("Actualizar playlist") también solo toca las activas y avisa cuántas dejó afuera.
+6. **La lista embebida no se puede quitar** (es el respaldo de fábrica), pero sí se puede desactivar.
+7. **Agrupar por señal sigue igual**: una señal que aparece en dos listas activas se ve como un canal
+   con varias variantes (fallback entre proveedores).
+8. **El companion también puede ver y alternar las listas**: `GET /api/state` trae la lista y
+   `POST /api/list` (o el comando `list`) la activa o desactiva.
+
+### Lo que cambia
+
+| Pieza | Qué hace |
+|---|---|
+| `data/room/KzEntities.kt` + `KzDatabase.kt` | `playlists.enabled` (esquema v6, migración 5→6) |
+| `data/PlaylistSelection.kt` | lógica pura: qué listas están activas, qué canales entran al catálogo, si se puede apagar |
+| `data/KzStore.kt` + `RoomStateMapper.kt` | `PersistedSource.enabled` |
+| `ui/TvController.kt` | `Screen.LISTS`, fila de Ajustes, activar/desactivar/quitar, rebuild del catálogo, refresh solo de las activas |
+| `ui/TvRoot.kt` | pantalla `ListsScreen` (y la grilla sigue viva también en Ajustes y en el selector) |
+| `server/EmbeddedServer.kt` | `GET /api/state` trae `lists`; `POST /api/list` y comando `list` |
+| `companion/src/app.tsx` | sección "Listas" en *Configurar* con el interruptor |
+
+### Verificación prevista
+
+- Tests unitarios de `PlaylistSelection` (qué entra al catálogo, la guarda de la última lista, el
+  toggle, las listas con el mismo contenido).
+- `KzDatabaseMigrationTest`: migración 1→6 sin perder datos y con `enabled = 1` por defecto.
+- En la TV real: dos listas (la embebida + una mandada desde el companion), activar y desactivar cada
+  una y ver cómo cambia el número de canales de la grilla, con los favoritos y la numeración intactos.
 

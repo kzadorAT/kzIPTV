@@ -22,13 +22,14 @@ con `CH+`/`CH-`, muestra EPG, y se configura desde el celular vía QR.
 | Setup por QR | ✅ | la TV sirve una web por HTTP; QR con `<url>/pair#<codigo>` + código de 6 dígitos |
 | Companion web (celular) | ✅ | Preact + Vite, 19 KB JS: configurar playlist, control remoto, listado, favoritos |
 | API / WebSocket | ✅ | `/api/state`, `/api/pair`, `/api/source`, `/api/favorite`, `/api/command`, `WS /ws?token=` — los endpoints que **modifican** la TV exigen el token que devuelve `/api/pair` |
-| EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3. **Guía fresca (hecho en P1):** la app la baja de una URL configurable, la cachea en disco y en Room y la actualiza en caliente (ver §14) |
+| EPG | 🟡 | 50/206 canales matchean por tvg-id exacto; 46 con guía real (2.474 programas). Ver §3. **Guía fresca (hecho en P1):** la app la baja de una URL configurable, la cachea en disco y en Room y la actualiza en caliente (ver §14). El pipeline semanal ahora genera **7 días** de guía (antes 2: se vencía antes del lunes) |
 | Robustez de reproducción | ✅ | error visible en pantalla, salto automático al canal siguiente, retoma el último canal al abrir. Ver §7 |
 | Variantes / selector de calidad | ✅ | **hecho en P1**: 206 feeds → **201 canales lógicos** (agrupados por tvg-id base + nombre normalizado), selector de calidad con fallback automático y TTL de 6 h para los feeds muertos |
 | Salvapantallas | ✅ | `FLAG_KEEP_SCREEN_ON` mientras se reproduce (verificado en `dumpsys window`) |
 | Comparar canales (mosaico de miniaturas) | ✅ | **hecho en P1**: grilla de 16 tiles con un frame congelado por canal. **No hay PiP en Android TV** y el decoder de hardware es único → se congela un frame por canal, no se transmiten varios streams (ver §10) |
 | Refresh de playlist con diff | ✅ | **hecho en P1**: la TV recarga las M3U por URL, calcula el diff contra el catálogo anterior y **conserva favoritos, calidad, salud y numeración** aunque la playlist cambie de nombre o URL (ver §15) |
-| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema **v5** (URL de la guía EPG, marca de refresh y números de canal), import del JSON legado con backup, cache EPG e historial (ver §5.1). Falta el selector de multi-lista en la UI y la PWA |
+| Persistencia Room / multi-lista / PWA | 🟡 | **Room hecho en P1**: esquema **v6** (URL de la guía EPG, marca de refresh, números de canal y el interruptor `enabled` del selector de lista), import del JSON legado con backup, cache EPG e historial (ver §5.1, §17). Falta la PWA |
+| Selector de lista | ✅ | **hecho en P1**: la TV elige **qué M3U mira**; interruptor persistido por lista, el catálogo se arma solo con las listas activas y se controla desde AJUSTES o desde el celular (ver §17) |
 
 ---
 
@@ -726,6 +727,49 @@ calidad, salud, resolución medida, numeración, último canal) se guarda y se c
 
 El detalle del diseño está en [docs/PLAN.md](PLAN.md) (sección "Diseño P1 · refresh de playlist con diff") y el
 cierre de la sesión en [docs/HANDOVER.md](HANDOVER.md) §14.
+
+
+---
+
+## 17 · P1 · Selector de lista: qué M3U mira la TV (27/10/2026)
+
+Hasta ahora las playlists se acumulaban en Room pero **la grilla siempre era la suma de todas**:
+no había forma de decir "mirá esta, no la otra". Con el diff de §15 ya se podía refrescar cada
+M3U por URL; faltaba decidir cuál mira la TV.
+
+### Qué se implementó
+
+| Pieza | Qué hace |
+|---|---|
+| `playlists.enabled` (Room **v6**, migración `5→6`) | interruptor por lista, persistido: `ALTER TABLE playlists ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1` |
+| `PlaylistSelection` (lógica pura, testeable) | `enabledSources` / `enabledIds` / `activeCount` / `setEnabled` / `toggle` / `canDeactivate` / `enabledChannels` |
+| `TvController` | `bootstrap` y `refreshPlaylists` solo descargan y usan las listas **activas**; `setPlaylistEnabled(id, enabled)` (con `Mutex`) baja la lista si hay que activarla; `rebuildCatalogFromActiveLists()` rehace el catálogo |
+| Pantalla **"Listas de canales"** | AJUSTES → "Listas de canales": OK activa/desactiva, OK largo quita (pide una segunda pulsación), BACK vuelve |
+| Companion | sección "Listas de canales" con un botón por lista: `POST /api/list` + comando WS `list` |
+
+### Reglas del producto
+
+- **No se puede apagar ni quitar la última lista activa** (quedaría la TV sin nada que mirar).
+- La lista embebida se puede **apagar**, pero no **quitar**.
+- Las listas apagadas **no se descargan**: al activarlas se baja el M3U (o se usa el cacheado).
+- Apagar una lista **conserva** favoritos, preferencia de calidad, salud y resolución medida, y la
+  numeración de canales: al rehacer el catálogo el estado no se poda.
+- El refresh manual solo toca las listas activas y avisa **cuántas omitió** (`sourcesSkipped`).
+
+### Lo que cambia para el usuario
+
+1. AJUSTES (tecla AZUL) → "Listas de canales" (la última fila).
+2. Cada fila muestra nombre, origen (embebida o host de la URL), cantidad de canales, última
+   actualización y su estado (ACTIVA / apagada).
+3. **OK** enciende o apaga la lista enfocada; **OK largo** la quita (con confirmación).
+4. Desde el celular: la sección "Listas de canales" del companion hace lo mismo.
+
+### Tests
+
+- `PlaylistSelectionTest` (10 casos): qué listas aportan canales, el toggle, el guardia de la
+  última lista activa y que una lista inexistente no rompa nada.
+- `RoomStateMapperTest`: el round-trip conserva `enabled`.
+- `KzDatabaseMigrationTest`: migración **1→6** sin perder datos; las playlists viejas quedan activas.
 
 ---
 

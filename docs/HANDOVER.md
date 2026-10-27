@@ -342,10 +342,13 @@ Como trabajar alrededor:
 - `POST /api/epg` `{url, token}` -> guarda la URL de la guia EPG (vacio = vuelve a la embebida) y la
   recarga al vuelo; responde `{ok, message, programCount, source}`.
 - `POST /api/refresh` `{token}` -> recarga las playlists por URL y devuelve
-  `{ok, added, removed, changed, sourcesRefreshed, sourcesFailed, message}`; **401** sin token y
+  `{ok, added, removed, changed, sourcesRefreshed, sourcesFailed, sourcesSkipped, message}`; **401** sin token y
   **409** si ya hay un refresh en curso.
-- `POST /api/command` `{type, ...}` -> `key, zap, play, variant, quality, favorite, text, search, category, grid, mosaic, epg`.
+- `POST /api/list` `{id, active, token}` -> activa o apaga una lista y devuelve `{ok, message}`;
+  **401** sin token. La ultima lista activa no se puede apagar.
+- `POST /api/command` `{type, ...}` -> `key, zap, play, variant, quality, favorite, text, search, category, grid, mosaic, epg, list`.
   El comando `epg` con `text` = URL cambia la guia; sin `text` = fuerza la recarga.
+  El comando `list` con `listId` + `enabled` = activa o apaga esa lista.
 - `WS /ws?token=` -> estado por push + comandos.
 
 **Todos los endpoints que modifican exigen el token** (401 si no).
@@ -371,7 +374,9 @@ Como trabajar alrededor:
    (fingerprint SHA-256), y actualiza la guia en caliente sin reinstalar la app. La URL se cambia
    desde el celular (companion) o por API (`POST /api/epg`); en Ajustes aparece la fila "Guia EPG".
    Commit `2c44150`, verificado en la TV real: seccion 13. Diseno completo en `docs/PLAN.md` §16.
-5. **Multi-lista** y selector de lista en la TV.
+5. ~~**Multi-lista** y selector de lista en la TV.~~ **Hecho (27/10/2026):** la TV elige que M3U mira:
+   interruptor persistido por lista (Room v6), el catalogo se arma solo con las listas activas y se
+   controla desde AJUSTES ("Listas de canales") o desde el companion. Ver seccion 17.
 6. **Ver despues** / cola de reproduccion.
 7. **Release firmado + R8 + baselineProfile** (el arranque en debug es 5,75 s; en release baja).
 8. Pre-calentar DNS/TLS del canal siguiente (hoy el zapping tarda 0,8-2,5 s).
@@ -550,7 +555,8 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 2. **Publicar el repo** (hoy `git remote -v` no trae ningun remoto) y dejar la URL por defecto de la
    guia (`https://raw.githubusercontent.com/<owner>/<repo>/main/epg/ar.xml.gz`) ya sea como valor
    inicial en el companion o como default en la app.
-3. La **guia lineal de EPG** (P2) y el **selector de lista** (P1) siguen pendientes.
+3. La **guia lineal de EPG** (P2) sigue pendiente; el **selector de lista** (P1) se hizo en la
+   seccion 17.
 4. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
 5. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
    `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
@@ -607,7 +613,7 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 
 1. ~~**Publicar el repo**~~: **hecho** (seccion 15): repo publico, remoto `origin` configurado y la
    guia del repo como URL por defecto de la app y del companion.
-2. El **selector de lista** (P1) y la **guia lineal de EPG** (P2) siguen pendientes.
+2. El **selector de lista** (P1) se hizo en la seccion 17; la **guia lineal de EPG** (P2) sigue pendiente.
 3. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
 4. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
    `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
@@ -676,7 +682,81 @@ Que se cambio:
 
 ### 15.5 - Por donde seguir (proximo chat)
 
-1. **Selector de lista** (P1): elegir que M3U se mira, con el diff ya existente.
+1. ~~**Selector de lista** (P1)~~: **hecho** (seccion 17): elegir que M3U se mira, con el diff ya existente.
+---
+
+## 17 - Cierre de la sesion (27/10/2026): selector de lista y guia EPG de 7 dias
+
+### 17.1 - Que se implemento: el selector de lista
+
+El usuario ahora elige **que M3U mira la TV**. Antes las playlists se acumulaban en Room pero la
+grilla siempre era la suma de todas: no habia forma de decir "mira esta, no la otra".
+
+| Pieza | Que hace |
+|---|---|
+| `playlists.enabled` (Room **v6**, migracion `5->6`) | interruptor por lista, persistido: `ALTER TABLE playlists ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1` |
+| `PlaylistSelection` (`data/PlaylistSelection.kt`) | logica pura: `enabledSources` / `enabledIds` / `activeCount` / `setEnabled` / `toggle` / `canDeactivate` / `enabledChannels` |
+| `TvController` | `bootstrap` y `refreshPlaylists` solo descargan y usan las listas **activas**; `setPlaylistEnabled(id, enabled)` (con `Mutex`) baja la lista al activarla; `rebuildCatalogFromActiveLists()` rearma el catalogo **sin podar el estado** |
+| Pantalla "Listas de canales" | AJUSTES (tecla AZUL) -> ultima fila: OK activa/desactiva, OK largo quita (2 pulsaciones), BACK vuelve |
+| Companion | seccion "Listas de canales" con un boton por lista: `POST /api/list` + comando WS `list` |
+| OK largo desde el celular | el comando `key` acepta `longPress`: el server reinyecta la tecla con la duracion de una pulsacion larga (800 ms), igual que el control remoto |
+
+Reglas del producto:
+
+- **No se puede apagar ni quitar la ultima lista activa** (la TV se quedaria sin nada que mirar).
+- La lista embebida se puede **apagar**, pero no **quitar**.
+- Las listas apagadas **no se descargan**: al activarlas se baja el M3U (o se usa el cacheado).
+- Apagar una lista **conserva** favoritos, preferencia de calidad, salud y resolucion medida y la
+  numeracion de canales: al rehacer el catalogo no se poda el estado del usuario.
+- El refresh manual solo toca las listas activas y avisa **cuantas omito** (`sourcesSkipped`).
+
+### 17.2 - La guia EPG: 7 dias y no 2
+
+Al correr los tests aparecio un fallo viejo:
+`EpgBundleTest.ahoraYSiguienteFuncionanParaUnCanalConGuia`. La guia empaquetada cubria del 25/10
+al 27/10 (el pipeline usaba `--days 2`) y el pipeline corre **todos los lunes**: entre semana la
+guia estaba vencida y la app no tenia "ahora" que mostrar (el error era real, no del test).
+
+- `.github/workflows/epg.yml`: `--days 2` -> `--days 7`.
+- Se disparo el pipeline a mano (run 40599343051): la guia nueva cubre del 27/10 al 02/11
+  (7.149 programas, 441 KB) y quedo publicada en `epg/ar.xml.gz`.
+- La app baja esa guia sola desde `raw.githubusercontent` (TTL 24 h); la embebida queda de respaldo.
+
+### 17.3 - Verificado en la TV real (TCL Smart TV Pro, `192.168.1.11`)
+
+| Prueba | Resultado |
+|---|---|
+| AJUSTES -> "Listas de canales" | 7 filas; la nueva muestra "1 de 1 activas" |
+| Pantalla del selector | 2 filas: "iptv-org · Argentina / embebida / 206 canales" y "prueba / archivo / 5 canales" |
+| OK en la lista de prueba | se apaga: el catalogo pasa de 206 canales (211 feeds) a 201 (206) |
+| OK de nuevo | se reactiva: vuelven los 206 canales (211 feeds) y la fecha de refresh |
+| Apagar la ultima lista activa | rechazado con cartel: "No podes apagar la ultima lista activa" |
+| OK largo (2 veces) | "OK largo otra vez para quitar prueba" y despues "Lista quitada: prueba" |
+| Favorito + numeracion | el favorito y el numero (#202) siguen intactos despues de apagar y volver a encender |
+| `POST /api/list` | `{"ok":true,"message":"Lista activada: iptv-org · Argentina (206 canales)"}`; **401** sin token |
+| Companion (navegador) | la seccion "Listas de canales" apaga y enciende la lista desde el celular; el boton pasa a "Activar" |
+| Companion sin emparejar | la API responde 401 y el companion avisa "Error: no se pudo cambiar" |
+| Guia EPG | la guia de 7 dias quedo en `epg/ar.xml.gz` y en los assets del APK |
+| Tests | **103 unitarios verdes** + **5 instrumentados** verdes en la TV (migracion 1->6) |
+| Instalacion nueva (pm clear) | **Bug encontrado y corregido**: el catalogo se armaba con las fuentes del store, que en una instalacion nueva todavia esta vacio -> grilla vacia y pantalla de setup. Ahora se filtra por las fuentes de esa vuelta (la embebida entra igual): desde cero cargan 201 canales / 206 feeds |
+
+### 17.4 - Estado al dejar esta sesion
+
+- La TV **cambio de IP**: ahora es `192.168.1.11:5555` (antes `192.168.1.18:5555`).
+- El APK queda instalado en la TV, con el server web **encendido** en `http://192.168.1.11:8080`.
+- La base de la TV quedo en el esquema **v6**, con las dos listas de la prueba ("iptv-org · Argentina"
+  y "prueba") y un favorito en "Canal de Prueba 1" (#202).
+- El repo quedo publico con la guia de 7 dias ya publicada.
+
+### 17.5 - Por donde seguir (proximo chat)
+
+1. La **guia lineal de EPG** (P2): la guia en una sola lista lineal por canal/hora.
+2. **Ver despues** / cola de reproduccion (P1).
+3. **Release firmado + R8 + baselineProfile** (P1): el arranque en debug es 5,75 s.
+4. Opcional: **precalentar** los logos de la grilla al iniciar.
+5. Opcional: dejar el **OK largo** tambien en el companion (hoy se puede mandar por API, pero el
+   boton del control remoto es un OK corto).
+
 2. **Guia lineal de EPG** (P2): la guia en una sola lista lineal por canal/hora.
 3. Opcional: **precalentar** los logos de la grilla al iniciar (hoy se cargan en segundo plano
    mientras se mira el video, que es justo lo que hace que al abrir la grilla no popeen).
