@@ -2,6 +2,7 @@
 
 > Fecha de corte: **26/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
 > - Rama `main` **sin remoto** (el usuario pidio dejar la publicacion del repo para el final).
+> - Ultimo commit funcional: `44f0b8e` (refresh de playlist con diff); el de docs es `d242909`.
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
@@ -421,6 +422,10 @@ Pendientes que surgieron al hacer la pantalla de Ajustes (ninguno bloquea al MVP
 ## 11 - Historial de commits (para ubicarse)
 
 ```
+d242909 docs(p1): registrar el refresh de playlist con diff en plan, estado y handover
+44f0b8e feat(p1): refresh de playlist con diff que conserva el estado del usuario
+85b70d9 docs(p1): registrar la verificacion del EPG fresco en la TV
+2c44150 feat(p1): guia EPG fresca descargable con cache en disco y Room
 140db94 docs(p1): marcar lo implementado en plan, handover y estado
 f17ae64 feat(p1): pantalla de ajustes con server web apagable
 5de8a5f fix(p1): la grilla acompana al foco y el cartel de estado se va solo
@@ -585,6 +590,7 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 
 ### Estado al dejar esta sesion
 
+- Todo comiteado: `44f0b8e` (feature) + `d242909` (docs de esta sesion).
 - Rama `main` **sin remoto**: el usuario pidio expresamente **no publicar el repo todavia**; se sigue
   trabajando en local y la publicacion queda para el final.
 - La app queda **instalada** en la TV (el APK se reinstalo porque `connectedDebugAndroidTest`
