@@ -1051,6 +1051,7 @@ class TvController(
     }
 
     fun openGrid() {
+        lastScreenChangeAt = android.os.SystemClock.elapsedRealtime()
         // El foco arranca en el canal que estas mirando: sin esto el OK no hace nada.
         val target = currentGroup.value?.id ?: catalog.value.groups.firstOrNull()?.id
         if (target != null) focusedGroupId.value = target
@@ -1066,6 +1067,11 @@ class TvController(
      *         a donde volver y el BACK doble cierra la app.
      */
     fun back(): Boolean {
+        android.util.Log.d(
+            "KzGrid",
+            "back en " + android.os.SystemClock.elapsedRealtime() +
+                " (pantalla " + screen.value + ")"
+        )
         focusedCategory.value = null
         return when (screen.value) {
             Screen.SEARCH -> { screen.value = Screen.GRID; true }
@@ -1075,7 +1081,15 @@ class TvController(
             Screen.SETTINGS -> { screen.value = settingsBackScreen; true }
             // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
             // BACK devuelve a esa lista. Si se estaba zapeando, vuelve al video.
-            Screen.PLAYER -> { screen.value = playerBackScreen; true }
+            Screen.PLAYER -> {
+                android.util.Log.d(
+                    "KzGrid",
+                    "cambio a grilla en " + android.os.SystemClock.elapsedRealtime()
+                )
+                lastScreenChangeAt = android.os.SystemClock.elapsedRealtime()
+                screen.value = playerBackScreen
+                true
+            }
             Screen.GRID -> false
             else -> { screen.value = Screen.GRID; true }
         }
@@ -1787,6 +1801,11 @@ class TvController(
     /** Momento del ultimo cambio de foco (elapsedRealtime). */
     @Volatile
     var lastFocusChangeAt: Long = 0L
+        private set
+
+    /** Momento del ultimo cambio de pantalla (elapsedRealtime). */
+    @Volatile
+    var lastScreenChangeAt: Long = 0L
         private set
 
     private fun moveGridFocus(code: Int) {

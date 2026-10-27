@@ -51,12 +51,14 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
@@ -104,14 +106,33 @@ fun TvRoot(controller: TvController) {
     val gridState = rememberLazyGridState()
     val chipState = rememberLazyListState()
 
-    when (screen) {
-        Screen.SETUP -> SetupScreen(controller)
-        Screen.PLAYER -> PlayerScreen(controller)
-        Screen.GRID -> GridScreen(controller, gridState, chipState)
-        Screen.QUALITY -> QualityScreen(controller)
-        Screen.SEARCH -> SearchScreen(controller)
-        Screen.MOSAIC -> MosaicScreen(controller)
-        Screen.SETTINGS -> SettingsScreen(controller)
+    // La grilla se mantiene COMPUESTA mientras se mira el video (solo no se
+    // dibuja): al volver ya esta lista, con los logos cargados y en la posicion
+    // donde estaba. Medido en la TV: abrir la grilla paso de ~2,4 s (recomponer
+    // 20 tarjetas + logos) a 118-174 ms. Se usa el MISMO sitio de composicion
+    // para que Compose conserve la grilla viva al cambiar de pantalla.
+    val gridVisible = screen == Screen.GRID
+    val keepGrid = screen == Screen.GRID || screen == Screen.PLAYER
+
+    Box(Modifier.fillMaxSize()) {
+        if (keepGrid) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .drawWithContent { if (gridVisible) drawContent() }
+            ) {
+                GridScreen(controller, gridState, chipState, visible = gridVisible)
+            }
+        }
+        when (screen) {
+            Screen.SETUP -> SetupScreen(controller)
+            Screen.PLAYER -> PlayerScreen(controller)
+            Screen.GRID -> Unit
+            Screen.QUALITY -> QualityScreen(controller)
+            Screen.SEARCH -> SearchScreen(controller)
+            Screen.MOSAIC -> MosaicScreen(controller)
+            Screen.SETTINGS -> SettingsScreen(controller)
+        }
     }
 }
 
@@ -275,12 +296,22 @@ private fun BannerOverlay(
 fun GridScreen(
     controller: TvController,
     gridState: LazyGridState,
-    chipState: LazyListState
+    chipState: LazyListState,
+    visible: Boolean = true
 ) {
     val catalog by controller.catalog.collectAsState()
     val selectedCategory by controller.category.collectAsState()
     val focusedCategory by controller.focusedCategory.collectAsState()
     val exitHint by controller.exitHintVisible.collectAsState()
+
+    // Cuanto tarda en REALLY verse la grilla cuando se vuelve del reproductor.
+    LaunchedEffect(visible) {
+        if (!visible) return@LaunchedEffect
+        withFrameNanos {
+            val delta = android.os.SystemClock.elapsedRealtime() - controller.lastScreenChangeAt
+            android.util.Log.d("KzGrid", "grilla visible en ${delta}ms")
+        }
+    }
 
     // Estos estados se crean una sola vez y cada tarjeta deriva el valor que
     // necesita. Mover el foco NO recompone la grilla entera: solo se recompone
@@ -410,11 +441,7 @@ fun GridScreen(
                         favorite = favorite,
                         active = active,
                         focused = focused,
-                        measuredQuality = measured,
-                        onClick = {
-                            controller.setFocused(group.id)
-                            controller.play(group)
-                        }
+                        measuredQuality = measured
                     )
                 }
             }
@@ -845,8 +872,7 @@ private fun ChannelCard(
     favorite: Boolean,
     active: Boolean,
     focused: Boolean,
-    measuredQuality: String,
-    onClick: () -> Unit
+    measuredQuality: String
 ) {
     controller.countCardComposition()
     val bestQuality = group.variants.firstOrNull()?.quality?.uppercase().orEmpty()
@@ -860,7 +886,7 @@ private fun ChannelCard(
             color = if (focused) KzBlue else Color(0xFF232C38),
             shape = RoundedCornerShape(12.dp)
         )
-        .clickable { onClick() }
+        // Sin clickable: en TV el OK lo maneja el controller (el foco es propio)
 
     Surface(
         shape = RoundedCornerShape(12.dp),

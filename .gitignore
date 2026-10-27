@@ -7,3 +7,4 @@ local.properties
 node_modules/
 dist/
 app-tv/app/src/main/assets/companion/
+.tmp/
