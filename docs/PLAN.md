@@ -248,7 +248,7 @@ altas, bajas y cambios; una actualizacion concurrente se rechaza.
 
 ### Diseño P1 · publicacion del repo, guia EPG por defecto y fluidez de la grilla (26/10/2026)
 
-**Estado:** en curso.
+**Estado:** hecho y verificado en la TV real (26/10/2026).
 
 **Publicacion:** el repo pasa a GitHub (`https://github.com/kzadorAT/kzIPTV`, rama `main`) y queda
 publico para que la app baje la guia sin pedirle nada al usuario. El remoto `origin` queda
@@ -260,17 +260,30 @@ defecto: si el usuario no configuro otra, la app la baja sola (cache de 24 h en 
 a la guia embebida si la red falla. El companion muestra esa misma URL. El pipeline semanal gana
 `permissions: contents: write` para poder publicar el `.gz`.
 
-**Fluidez de la grilla:** el problema no es el reproductor sino que cada tecla del D-pad recompone
-**toda** la grilla (el foco se leia arriba y se pasaba a las 20 tarjetas visibles) y que al volver
-de la pantalla de reproduccion la grilla se reconstruia desde cero.
+**Fluidez de la grilla:** primero se midio en la TV, porque la intuicion inicial era incorrecta:
+Compose **ya** saltaba las tarjetas que no cambian (1-5 recomposiciones por tecla, antes y
+despues). El cuello de botella real era otro: **volver a la grilla desde el reproductor la
+recomponia desde cero** (20 tarjetas + logos = ~2,4 s en esa TV) y ademas perdia la posicion.
+
+| Que se midio | Antes | Despues |
+|---|---|---|
+| Recomposiciones de tarjeta por tecla | 1-5 | 1-5 (no era el cuello) |
+| Alineacion del foco (tecla -> scroll) | sin medicion | **2-16 ms** (los picos de 135 ms son filas nuevas) |
+| **Abrir la grilla (BACK -> primer frame)** | **~2.400 ms** | **118-174 ms** |
+| Posicion al volver del video | se perdia | se conserva |
 
 | Cambio | Por que |
 |---|---|
-| `LazyGridState`/`LazyListState` viven en `TvRoot` (arriba de la pantalla) | al volver a la grilla se conserva la posicion: no se recompone desde el inicio |
+| `LazyGridState`/`LazyListState` viven en `TvRoot` (arriba de la pantalla) | al volver a la grilla se conserva la posicion |
+| La grilla **queda viva** mientras se mira el video (mismo sitio de composicion + `drawWithContent` sin dibujar) | ya esta compuesta y con los logos cargados: abrirla es un frame, no 2,4 s |
 | Lista filtrada memorizada (`remember(catalog, category)`) | se evita rearmar la lista en cada recomposicion |
-| Cada tarjeta deriva su estado (`derivedStateOf`) | mover el foco recompone solo las 2 tarjetas que cambian, no las 20 visibles |
+| Cada tarjeta deriva su estado (`derivedStateOf`) | mover el foco recompone solo las 2 tarjetas que cambian |
 | El foco se observa con `collect` (fuera de la composicion) | la grilla no se invalida entera en cada tecla |
+| Las tarjetas no son `clickable` | en TV el OK lo maneja el controller: sobra el gesto y evita que la grilla invisible robe el foco |
 | Scroll instantaneo y alineado a la fila | en TV una animacion larga se siente como lag |
+
+La medicion sale de los logs `KzGrid` (`grilla visible en Xms`, `foco alineado en Xms`,
+`tras la tecla: N tarjetas recompuestas`).
 
 ## 8 · Playback y casos borde
 

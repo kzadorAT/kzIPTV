@@ -1,14 +1,20 @@
 # HANDOVER - kzIPTV (para retomar en un chat nuevo)
 
 > Fecha de corte: **26/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
-> - Rama `main` **sin remoto** (el usuario pidio dejar la publicacion del repo para el final).
-> - Ultimo commit funcional: `44f0b8e` (refresh de playlist con diff); el de docs es `d242909`.
+> - Rama `main` **con remoto**: `origin` = `https://github.com/kzadorAT/kzIPTV.git` (repo **publico**).
+> - Ultimo commit funcional: `4f7ab58` (grilla fluida + guia EPG por defecto); el de docs va aparte.
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
 > los limites fisicos de la TV y la lista de lo que falta.
 >
-> **Resumen de la sesion que se cerro (26/10/2026, 2a parte de la noche):** se implemento y verifico
+> **Resumen de la sesion que se cerro (26/10/2026, 3a parte de la noche):** el repo quedo **publico** en
+> GitHub (`https://github.com/kzadorAT/kzIPTV`), la guia EPG del repo paso a ser la **URL por defecto**
+> de la app (y el companion la muestra), y la **grilla se hizo fluida**: se midio en la TV que abrirla
+> desde el reproductor costaba **~2,4 s** (se recomponia desde cero) y ahora cuesta **118-174 ms**,
+> conservando la posicion de scroll. Seccion 15.
+>
+> **Resumen de la sesion anterior (26/10/2026, 2a parte de la noche):** se implemento y verifico
 > en la TV real el **refresh de playlist con diff**: la TV vuelve a bajar las M3U por URL, calcula el
 > diff contra el catalogo anterior y **conserva favoritos, calidad, salud y numeracion** aunque el
 > proveedor renombre el canal o cambie la URL del stream. Nueva fila "Actualizar playlist" en
@@ -599,11 +605,79 @@ de estado transitorio y la pantalla de AJUSTES (server web apagable + QR + encua
 
 ### Por donde seguir (proximo chat)
 
-1. **Publicar el repo** y dejar la URL por defecto de la guia
-   (`https://raw.githubusercontent.com/<owner>/<repo>/main/epg/ar.xml.gz`) como valor inicial en el
-   companion o default en la app. Es el pendiente que el usuario dejo **para el final**.
+1. ~~**Publicar el repo**~~: **hecho** (seccion 15): repo publico, remoto `origin` configurado y la
+   guia del repo como URL por defecto de la app y del companion.
 2. El **selector de lista** (P1) y la **guia lineal de EPG** (P2) siguen pendientes.
 3. El selector de **audio/subtitulos** solo tiene sentido con una playlist multi-audio (hoy 0 pistas).
 4. Regla que se viene usando: compilar -> instalar -> **verificar en la TV** -> actualizar
    `docs/P0-STATUS.md` y este HANDOVER -> commit chico en espanol.
+
+---
+
+## 15 - Cierre de la sesion (26/10/2026, 3a parte de la noche): repo publico, guia por defecto y grilla fluida
+
+### 15.1 - El repo quedo publico
+
+- Remoto `origin` = `https://github.com/kzadorAT/kzIPTV.git`, rama `main` siguiendo `origin/main`.
+- Visibilidad **publica** (`gh repo edit --visibility public`).
+- Identidad de commit: `kzIPTV <fabricio.loaiza@outlook.com>`.
+- Se reviso antes de publicar: 90 archivos versionados, **sin secretos** (ni `local.properties`, ni
+  keystore, ni tokens, ni `.env`).
+- La guia ya se puede bajar sin pedirle nada al usuario:
+  `https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz` (200, 176.021 bytes).
+
+### 15.2 - La guia EPG del repo es el valor por defecto
+
+- `core/epg/EpgSource.kt`: `const val DEFAULT_PUBLIC_URL =`
+  `https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz`.
+- `TvController`: bootstrap, `loadEpg()`, `refreshEpg()` y `setEpgUrl()` usan esa URL cuando no hay
+  ninguna configurada; la guia embebida queda como respaldo si la red falla.
+- El companion se precarga con la URL efectiva que reporta la TV (`state.epgUrl`).
+- `.github/workflows/epg.yml`: `permissions: contents: write` para que el job semanal pueda publicar.
+- En la TV: `EPG remoto listo en 2.011 ms (descarga + cache Room, 2.474 programas)` sin configurar nada.
+
+### 15.3 - La grilla: lo que se midio (y lo que NO era el problema)
+
+La intuicion era "cada tecla recompone toda la grilla". **Falsa**: Compose ya saltea las tarjetas que
+no cambian (1-5 recomposiciones por tecla, antes y despues). El cuello real era **recomponer la
+grilla desde cero al volver del reproductor** y ademas perder la posicion de scroll.
+
+| Metrica | Antes | Despues |
+|---|---|---|
+| Recomposiciones por tecla | 1-5 | 1-5 |
+| Alineacion del foco (tecla -> scroll) | sin medicion | **2-16 ms** |
+| **Abrir la grilla (BACK -> primer frame)** | **~2.400 ms** | **118-174 ms** |
+| Posicion al volver del video | se perdia | se conserva |
+
+Que se cambio:
+
+- `LazyGridState`/`LazyListState` viven en `TvRoot` (se conservan al cambiar de pantalla).
+- La **grilla queda viva** mientras se mira el video: mismo sitio de composicion +
+  `Modifier.drawWithContent { if (visible) drawContent() }`. Ya esta compuesta y con los logos
+  cargados, asi que abrirla es un frame.
+- Cada tarjeta deriva su estado (`derivedStateOf`) y el foco se observa con `collect` **fuera** de
+  la composicion (`LaunchedEffect(gridState, list) { controller.focusedGroupId.collect { ... } }`).
+- Las tarjetas **no son `clickable`**: en TV el OK lo maneja el controller, asi que sobra el gesto y
+  la grilla invisible no puede robarle el foco a la pantalla de video.
+- Logs nuevos para medir: `KzGrid` -> `grilla visible en Xms`, `foco alineado en Xms`,
+  `tras la tecla: N tarjetas recompuestas`; `TvController.countCardComposition()`.
+
+> Ojo: `dumpsys gfxinfo` en esta TV devuelve **0 frames**: no sirve como metrica. Lo que sirve es
+> medir con logs propios (timestamps del dispositivo) y capturas de pantalla.
+
+### 15.4 - Estado al dejar esta sesion
+
+- Todo comiteado y pusheado: `4f7ab58` (feature) + el commit de docs.
+- La app queda **instalada** en la TV (el APK se reinstalo porque `connectedDebugAndroidTest`
+  desinstala al terminar).
+- Tests: **92 unitarios verdes** + **5 instrumentados** verdes en la TV real.
+- Verificado con capturas: la grilla se ve bien (logos, foco, chips) y el video se ve completo con la
+  grilla escondida.
+
+### 15.5 - Por donde seguir (proximo chat)
+
+1. **Selector de lista** (P1): elegir que M3U se mira, con el diff ya existente.
+2. **Guia lineal de EPG** (P2): la guia en una sola lista lineal por canal/hora.
+3. Opcional: **precalentar** los logos de la grilla al iniciar (hoy se cargan en segundo plano
+   mientras se mira el video, que es justo lo que hace que al abrir la grilla no popeen).
 

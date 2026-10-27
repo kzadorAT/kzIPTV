@@ -727,3 +727,57 @@ calidad, salud, resolución medida, numeración, último canal) se guarda y se c
 El detalle del diseño está en [docs/PLAN.md](PLAN.md) (sección "Diseño P1 · refresh de playlist con diff") y el
 cierre de la sesión en [docs/HANDOVER.md](HANDOVER.md) §14.
 
+---
+
+## 16 · Grilla fluida, repo público y guía EPG por defecto (26/10/2026)
+
+### Lo que se publicó
+
+| Pieza | Qué se hizo |
+|---|---|
+| GitHub | `https://github.com/kzadorAT/kzIPTV` **público**, rama `main` con remoto `origin` configurado; commits con `kzIPTV <fabricio.loaiza@outlook.com>` |
+| Guía EPG por defecto | `EpgSource.DEFAULT_PUBLIC_URL` = `https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz`: si el usuario no configuró otra URL, la app la baja sola (cache 24 h en disco + Room) y cae a la guía embebida si la red falla |
+| Companion | el campo "URL de la guía EPG" se precarga con la URL efectiva que reporta la TV |
+| Pipeline | `.github/workflows/epg.yml` con `permissions: contents: write` (el job semanal publica el `.gz` en `main`) |
+
+### La grilla: lo que se midió en la TV real
+
+La primera hipótesis ("cada tecla recompone las 20 tarjetas") era **falsa**: Compose ya saltaba
+las tarjetas que no cambian. Midiendo con logs propios (`KzGrid`) apareció el cuello real: **volver a
+la grilla desde el reproductor la recomponía desde cero** (20 tarjetas + logos ≈ 2,4 s en esa TV) y
+además perdía la posición de scroll.
+
+| Métrica | Antes | Después |
+|---|---|---|
+| Recomposiciones de tarjeta por tecla | 1-5 | 1-5 (no era el cuello) |
+| Alineación del foco (tecla → scroll) | sin medición | **2-16 ms** (picos de ~135 ms al entrar a una fila nueva) |
+| **Abrir la grilla (BACK → primer frame)** | **~2.400 ms** | **118-174 ms** |
+| Posición al volver del video | se perdía (vuelta al inicio) | se conserva |
+| Descarga de la guía al arrancar | — | `EPG remoto listo en 2.011 ms (descarga + cache Room, 2.474 programas)` |
+
+### Qué se implementó
+
+| Pieza | Qué hace |
+|---|---|
+| `ui/TvRoot.kt` | `LazyGridState`/`LazyListState` viven en `TvRoot`; la **grilla queda viva** mientras se mira el video (mismo sitio de composición + `drawWithContent` sin dibujar): al volver ya está compuesta y con los logos cargados |
+| `ui/TvRoot.kt` | cada tarjeta deriva su estado (`derivedStateOf`) y el foco se observa con `collect` fuera de la composición: mover el foco recompone solo las 2 tarjetas que cambian |
+| `ui/TvRoot.kt` | las tarjetas ya no son `clickable` (en TV el OK lo maneja el controller): sobra el gesto y la grilla invisible no puede robar el foco |
+| `ui/TvController.kt` | `isFavorite(group, favorites)` para derivar el estado por tarjeta sin releer el flow; logs de diagnóstico `KzGrid` |
+| `core/epg/EpgSource.kt` | `DEFAULT_PUBLIC_URL` (guía del repo) |
+| `ui/TvController.kt` | bootstrap, `loadEpg`, `refreshEpg` y `setEpgUrl` usan la URL por defecto cuando no hay ninguna configurada |
+
+### Verificado en la TV real (TCL Smart TV Pro, 26/10/2026)
+
+| Prueba | Resultado |
+|---|---|
+| Arranque con la guía por defecto | `EPG remoto listo en 2.011 ms (descarga + cache Room, 2.474 programas)` (sin configurar ninguna URL) |
+| Abrir la grilla desde el video (3 veces) | `grilla visible en 118 ms / 174 ms / 154 ms` (antes ~2.400 ms) |
+| Navegar con el D-pad | `foco alineado en 2-16 ms`; 1-5 tarjetas recomputadas por tecla |
+| Volver al video | el video se ve completo (captura de pantalla) y la grilla escondida no interfiere |
+| Posición | al volver de la TV, la grilla reabre en el canal-focused de antes (captura: #13…#24) |
+| URL pública de la guía | `HEAD https://raw.githubusercontent.com/kzadorAT/kzIPTV/main/epg/ar.xml.gz` → **200**, 176.021 bytes |
+| Tests | **92 unitarios verdes** + **5 instrumentados** verdes en la TV |
+
+El detalle del diseño está en [docs/PLAN.md](PLAN.md) (sección "Diseño P1 · publicacion del repo, guia EPG por
+defecto y fluidez de la grilla") y el cierre de la sesión en [docs/HANDOVER.md](HANDOVER.md) §15.
+
