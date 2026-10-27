@@ -18,6 +18,7 @@ import ar.kziptv.data.ChannelStateMigration
 import ar.kziptv.data.EpgRepository
 import ar.kziptv.data.KzStore
 import ar.kziptv.data.PlaylistMerge
+import ar.kziptv.data.PlaylistSelection
 import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.core.nav.GridNavigator
@@ -44,10 +45,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
 
-enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS }
+enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS, LISTS }
 
 /** Filas de la pantalla de ajustes (el orden es el de navegacion). */
-enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG, PLAYLIST }
+enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG, PLAYLIST, LISTS }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -80,6 +81,21 @@ data class ChannelDto(
     val activeVariantId: String = ""
 )
 
+/** Una playlist (lista de canales): se puede activar o apagar desde la TV. */
+@Serializable
+data class PlaylistDto(
+    val id: String,
+    val name: String = "",
+    val url: String = "",
+    val channelCount: Int = 0,
+    /** true si el usuario mira esta lista (solo las activas entran al catalogo). */
+    val active: Boolean = true,
+    /** true si viene con la app (no se puede quitar, solo apagar). */
+    val bundled: Boolean = false,
+    /** Ultima descarga exitosa (epoch ms). */
+    val lastRefreshAt: Long = 0,
+)
+
 /** Resultado de una actualizacion manual de playlists. */
 @Serializable
 data class PlaylistRefreshResult(
@@ -89,6 +105,8 @@ data class PlaylistRefreshResult(
     val changed: Int = 0,
     val sourcesRefreshed: Int = 0,
     val sourcesFailed: Int = 0,
+    /** Playlists apagadas: no se descargan (el refresh solo toca las activas). */
+    val sourcesSkipped: Int = 0,
     val message: String = "",
 )
 
@@ -133,8 +151,13 @@ data class StateDto(
     /** true mientras se esta descargando o parseando la guia. */
     val epgRefreshing: Boolean = false,
     /** true mientras se actualizan las playlists. */
-    val playlistRefreshing: Boolean = false
+    val playlistRefreshing: Boolean = false,
+    /** Las playlists guardadas con su estado real (lo que ve el selector). */
+    val lists: List<PlaylistDto> = emptyList(),
 )
+
+/** El contenido crudo de una playlist y sus canales ya parseados. */
+private data class LoadedSource(val content: String, val channels: List<Channel>)
 
 class TvController(
     private val context: Context,
@@ -193,6 +216,18 @@ class TvController(
 
     /** Foco de la pantalla de ajustes. */
     val settingsFocus = MutableStateFlow(0)
+
+    /** Las playlists guardadas con su estado real (lo que ve el selector de lista). */
+    val playlists = MutableStateFlow<List<PlaylistDto>>(emptyList())
+
+    /** Foco de la pantalla del selector de lista. */
+    val listsFocus = MutableStateFlow(0)
+
+    /** Playlist que espera confirmacion para quitarse (null = ninguna). */
+    val listsRemovingId = MutableStateFlow<String?>(null)
+
+    /** true mientras se carga una lista o se rearma el catalogo. */
+    val listsBusy = MutableStateFlow(false)
 
     /** Encuadre del video: 0 = ajustar, 1 = rellenar, 2 = ampliar. */
     val videoFitMode = MutableStateFlow(0)
@@ -513,34 +548,29 @@ class TvController(
             channelsBySource.clear()
             val loadedSources = mutableListOf<PersistedSource>()
             for (source in sources) {
-                val content = try {
-                    when {
-                        source.content.isNotBlank() -> source.content
-                        source.bundled -> repo.bundledAr()
-                        else -> repo.fetch(source.url)
-                    }
-                } catch (e: Exception) {
-                    setStatus("No pude leer ${source.name}: ${e.message}", sticky = true)
-                    null
-                } ?: continue
-                val channels = withContext(Dispatchers.IO) { M3uParser.parse(content, source.id) }
-                if (channels.isEmpty()) {
+                // Las listas apagadas no se descargan: se cargan cuando el usuario las activa.
+                if (!source.enabled) continue
+                val loaded = loadSourceChannels(source) ?: continue
+                if (loaded.channels.isEmpty()) {
                     setStatus("La lista ${source.name} no tiene canales", sticky = true)
                     continue
                 }
-                channelsBySource[source.id] = channels
+                channelsBySource[source.id] = loaded.channels
                 loadedSources += if (!source.bundled && source.content.isBlank()) {
                     source.copy(
-                        content = content,
-                        channelCount = channels.size,
+                        content = loaded.content,
+                        channelCount = loaded.channels.size,
                         lastRefreshAt = System.currentTimeMillis(),
                     )
                 } else {
-                    source.copy(channelCount = channels.size)
+                    source.copy(channelCount = loaded.channels.size)
                 }
             }
 
-            val all = channelsBySource.values.flatten()
+            // El catalogo se arma solo con las playlists activas.
+            // El filtro usa las fuentes de ESTA vuelta (que incluyen la embebida cuando
+            // la base esta vacia): en una instalacion nueva el store todavia no la tiene.
+            val all = activeChannels(PlaylistSelection.enabledIds(sources))
             applyChannels(all)
             store.update { current ->
                 current.copy(
@@ -548,6 +578,7 @@ class TvController(
                     pairingCode = resolvedPairingCode,
                 )
             }
+            refreshPlaylistItems()
             android.util.Log.i(
                 "KzStartup",
                 "playlist lista en " + (android.os.SystemClock.elapsedRealtime() - bootAt) +
@@ -581,9 +612,11 @@ class TvController(
             val migrated = ChannelStateMigration.migrate(current, next)
             current.copy(
                 favorites = migrated.favorites,
-                qualityPreference = migrated.qualityPreference,
-                variantStatus = migrated.variantStatus,
-                measuredResolution = migrated.measuredResolution,
+                // Lo que no esta en el catalogo no se borra: puede ser una lista apagada
+                // (vuelve intacta al activarla) o un canal que todavia no volvio.
+                qualityPreference = current.qualityPreference + migrated.qualityPreference,
+                variantStatus = current.variantStatus + migrated.variantStatus,
+                measuredResolution = current.measuredResolution + migrated.measuredResolution,
                 channelNumbers = current.channelNumbers + next.numberAssignments,
                 lastGroupId = migrated.lastGroupId,
                 lastChannelId = migrated.lastChannelId,
@@ -593,6 +626,46 @@ class TvController(
         setStatus("${catalog.value.groups.size} canales" +
             (if (catalog.value.variantCount > catalog.value.groups.size) " (${catalog.value.variantCount} feeds)" else "") +
             " cargados")
+    }
+
+    /**
+     * Carga una playlist: del contenido cacheado si lo hay, del asset embebido
+     * o de la URL. Devuelve null si no se pudo leer.
+     */
+    private suspend fun loadSourceChannels(source: PersistedSource): LoadedSource? =
+        withContext(Dispatchers.IO) {
+            val content = try {
+                when {
+                    source.content.isNotBlank() -> source.content
+                    source.bundled -> repo.bundledAr()
+                    source.url.isNotBlank() -> repo.fetch(source.url)
+                    else -> null
+                }
+            } catch (e: Exception) {
+                setStatus("No pude leer ${source.name}: ${e.message}", sticky = true)
+                null
+            } ?: return@withContext null
+            LoadedSource(content, M3uParser.parse(content, source.id))
+        }
+
+    /** Los canales de las playlists activas: lo unico que entra al catalogo. */
+    private fun activeChannels(
+        enabledIds: Set<String> = PlaylistSelection.enabledIds(store.state.value.sources),
+    ): List<Channel> = PlaylistSelection.enabledChannels(channelsBySource, enabledIds)
+
+    /** Arma la vista de playlists del selector (con el conteo real de canales). */
+    private fun refreshPlaylistItems() {
+        playlists.value = store.state.value.sources.map { source ->
+            PlaylistDto(
+                id = source.id,
+                name = source.name,
+                url = source.url,
+                channelCount = channelsBySource[source.id]?.size ?: source.channelCount,
+                active = source.enabled,
+                bundled = source.bundled,
+                lastRefreshAt = source.lastRefreshAt,
+            )
+        }
     }
 
     /**
@@ -612,11 +685,17 @@ class TvController(
         playlistRefreshing.value = true
         try {
             val sources = store.state.value.sources
-            val refreshable = sources.filter { it.url.isNotBlank() }
+            // Solo se actualizan las playlists activas: lo apagado no se descarga.
+            val refreshable = sources.filter { it.enabled && it.url.isNotBlank() }
+            val skipped = sources.count { !it.enabled && it.url.isNotBlank() }
             if (refreshable.isEmpty()) {
-                val message = "No hay playlists por URL para actualizar"
+                val message = if (skipped > 0) {
+                    "No hay playlists activas por URL para actualizar ($skipped apagadas)"
+                } else {
+                    "No hay playlists por URL para actualizar"
+                }
                 setStatus(message, sticky = true)
-                return PlaylistRefreshResult(ok = false, message = message)
+                return PlaylistRefreshResult(ok = false, sourcesSkipped = skipped, message = message)
             }
 
             val oldCatalog = catalog.value
@@ -661,7 +740,9 @@ class TvController(
                 )
             }
 
-            val newChannels = nextBySource.values.flatten()
+            // El catalogo nuevo usa solo las playlists activas.
+            val activeIds = PlaylistSelection.enabledIds(store.state.value.sources)
+            val newChannels = nextBySource.filterKeys { it in activeIds }.values.flatten()
             val diff = PlaylistDiffer.diff(oldCatalog.all, newChannels)
             val newCatalog = withContext(Dispatchers.IO) {
                 ChannelCatalog(newChannels, store.state.value.channelNumbers)
@@ -678,9 +759,11 @@ class TvController(
                 current.copy(
                     sources = PlaylistMerge.merge(current.sources, updatedSources),
                     favorites = migrated.favorites,
-                    qualityPreference = migrated.qualityPreference,
-                    variantStatus = migrated.variantStatus - urlChanges,
-                    measuredResolution = migrated.measuredResolution - urlChanges,
+                    // El estado de lo que no aparece en el catalogo se conserva igual:
+                    // puede ser una lista apagada o un canal que vuelve otro dia.
+                    qualityPreference = current.qualityPreference + migrated.qualityPreference,
+                    variantStatus = current.variantStatus + migrated.variantStatus - urlChanges,
+                    measuredResolution = current.measuredResolution + migrated.measuredResolution - urlChanges,
                     channelNumbers = current.channelNumbers + newCatalog.numberAssignments,
                     lastGroupId = migrated.lastGroupId,
                     lastChannelId = migrated.lastChannelId,
@@ -698,8 +781,10 @@ class TvController(
             val message = buildString {
                 append("Playlists actualizadas: +${diff.added.size} / -${diff.removed.size} / ~${diff.changed.size}")
                 if (failed > 0) append(" (${failed} fallaron)")
+                if (skipped > 0) append(" ($skipped apagadas omitidas)")
             }
             setStatus(message)
+            refreshPlaylistItems()
             return PlaylistRefreshResult(
                 ok = true,
                 added = diff.added.size,
@@ -707,6 +792,7 @@ class TvController(
                 changed = diff.changed.size,
                 sourcesRefreshed = refreshed,
                 sourcesFailed = failed,
+                sourcesSkipped = skipped,
                 message = message,
             )
         } finally {
@@ -1079,6 +1165,11 @@ class TvController(
             Screen.QUALITY -> { screen.value = Screen.PLAYER; true }
             Screen.SETUP -> { screen.value = setupBackScreen; true }
             Screen.SETTINGS -> { screen.value = settingsBackScreen; true }
+            Screen.LISTS -> {
+                listsRemovingId.value = null
+                screen.value = Screen.SETTINGS
+                true
+            }
             // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
             // BACK devuelve a esa lista. Si se estaba zapeando, vuelve al video.
             Screen.PLAYER -> {
@@ -1465,8 +1556,203 @@ class TvController(
             Setting.VIDEO -> cycleVideoFit()
             Setting.EPG -> refreshEpg()
             Setting.PLAYLIST -> scope.launch { refreshPlaylists() }
+            Setting.LISTS -> openLists()
         }
     }
+    // ---------------------------------------------------------------------
+    // Selector de lista
+    // ---------------------------------------------------------------------
+
+    /** Abre el selector de playlists (BACK vuelve a Ajustes). */
+    fun openLists() {
+        listsFocus.value = 0
+        listsRemovingId.value = null
+        screen.value = Screen.LISTS
+    }
+
+    /** Mueve el foco en la pantalla del selector de lista. */
+    private fun moveListsFocus(code: Int) {
+        val count = playlists.value.size
+        if (count == 0) return
+        val index = listsFocus.value.coerceIn(0, count - 1)
+        when (code) {
+            RemoteKeys.DPAD_DOWN -> listsFocus.value = (index + 1) % count
+            RemoteKeys.DPAD_UP -> listsFocus.value = (index - 1 + count) % count
+        }
+    }
+
+    /** Activa o desactiva la lista enfocada (OK corto). */
+    private fun activateListsRow() {
+        val item = playlists.value.getOrNull(listsFocus.value) ?: return
+        listsRemovingId.value = null
+        togglePlaylist(item.id)
+    }
+
+    /** Pide confirmacion para quitar la lista enfocada (OK largo, dos veces). */
+    private fun requestRemoveList() {
+        val item = playlists.value.getOrNull(listsFocus.value) ?: return
+        if (item.bundled) {
+            setStatus("La lista embebida no se puede quitar", sticky = true)
+            return
+        }
+        if (listsRemovingId.value == item.id) {
+            listsRemovingId.value = null
+            removePlaylist(item.id)
+            return
+        }
+        listsRemovingId.value = item.id
+        setStatus("OK largo otra vez para quitar ${item.name}")
+    }
+
+    /**
+     * Activa o desactiva una playlist y rearma el catalogo con las activas.
+     *
+     * Apagar NO borra el estado del usuario (favoritos, calidad elegida, salud de
+     * cada feed y numeros de canal): todo eso vive por clave canonica y vuelve
+     * intacto al reactivarla.
+     *
+     * @return un mensaje para la pantalla o para la API.
+     */
+    suspend fun setPlaylistEnabled(id: String, enabled: Boolean): String = refreshMutex.withLock {
+        val source = store.state.value.sources.firstOrNull { it.id == id }
+        if (source == null) {
+            setStatus("No existe esa lista", sticky = true)
+            return@withLock "No existe esa lista"
+        }
+        if (source.enabled == enabled) {
+            val message = source.name + " ya est\u00e1 " + if (enabled) "activa" else "apagada"
+            setStatus(message)
+            return@withLock message
+        }
+        if (!enabled && !PlaylistSelection.canDeactivate(store.state.value.sources, id)) {
+            // La ultima lista activa no se puede apagar: la TV se quedaria sin nada.
+            setStatus("No pod\u00e9s apagar la \u00faltima lista activa", sticky = true)
+            return@withLock "No pod\u00e9s apagar la \u00faltima lista activa"
+        }
+        listsBusy.value = true
+        try {
+            var loaded: LoadedSource? = null
+            if (enabled) {
+                // Una lista apagada no se descarga al arrancar: se carga ahora.
+                if (!channelsBySource.containsKey(id)) {
+                    setStatus("Descargando ${source.name}…")
+                    loaded = loadSourceChannels(source)
+                    if (loaded == null || loaded.channels.isEmpty()) {
+                        setStatus("No se pudo cargar ${source.name}", sticky = true)
+                        return@withLock "No se pudo cargar ${source.name}"
+                    }
+                    channelsBySource[id] = loaded.channels
+                }
+            }
+            // El contenido recien bajado se guarda: la proxima vez no se descarga.
+            val fresh = loaded
+            if (fresh != null) {
+                store.update { current ->
+                    current.copy(
+                        sources = current.sources.map {
+                            if (it.id == id) {
+                                it.copy(
+                                    content = fresh.content,
+                                    channelCount = fresh.channels.size,
+                                    lastRefreshAt = System.currentTimeMillis(),
+                                )
+                            } else {
+                                it
+                            }
+                        },
+                    )
+                }
+            }
+            store.update { current ->
+                current.copy(
+                    sources = PlaylistSelection.setEnabled(current.sources, id, enabled),
+                )
+            }
+            rebuildCatalogFromActiveLists()
+            val count = catalog.value.groups.size
+            val message = (if (enabled) "Lista activada: " else "Lista apagada: ") +
+                source.name + " (" + count + " canales)"
+            setStatus(message)
+            message
+        } finally {
+            listsBusy.value = false
+            refreshPlaylistItems()
+        }
+    }
+
+    /** Activa o desactiva una lista desde la API (no espera el resultado). */
+    fun requestPlaylistEnabled(id: String, enabled: Boolean) {
+        scope.launch { setPlaylistEnabled(id, enabled) }
+    }
+
+    /** Da vuelta el interruptor de una lista (lo que hace OK en el selector). */
+    fun togglePlaylist(id: String) {
+        scope.launch {
+            val source = store.state.value.sources.firstOrNull { it.id == id } ?: return@launch
+            setPlaylistEnabled(id, !source.enabled)
+        }
+    }
+
+    /**
+     * Rearma el catalogo con las playlists activas SIN tocar el estado del usuario.
+     *
+     * A diferencia del refresh (donde un canal puede desaparecer de verdad), aca
+     * solo se enciende o apaga una lista.
+     */
+    private suspend fun rebuildCatalogFromActiveLists() {
+        val oldCatalog = catalog.value
+        val channels = activeChannels()
+        val next = withContext(Dispatchers.IO) {
+            ChannelCatalog(channels, store.state.value.channelNumbers)
+        }
+        catalog.value = next
+        store.update { current ->
+            current.copy(channelNumbers = current.channelNumbers + next.numberAssignments)
+        }
+        favorites.value = store.state.value.favorites.toSet()
+        reconcileAfterRefresh(oldCatalog, next)
+        // Si la categoria elegida ya no existe, se vuelve a "Todos".
+        if (category.value != null && next.categories.none { it == category.value }) {
+            category.value = null
+        }
+        // El foco tiene que seguir apuntando a un canal que exista.
+        val focused = focusedGroupId.value
+        if (focused == null || next.groupById[focused] == null) {
+            focusedGroupId.value = next.groups.firstOrNull()?.id
+        }
+    }
+
+    /** Quita una playlist (la embebida no se puede quitar). */
+    fun removePlaylist(id: String) {
+        scope.launch {
+            refreshMutex.withLock {
+                val source = store.state.value.sources.firstOrNull { it.id == id } ?: return@withLock
+                if (source.bundled) {
+                    setStatus("La lista embebida no se puede quitar", sticky = true)
+                    return@withLock
+                }
+                if (source.enabled && !PlaylistSelection.canDeactivate(store.state.value.sources, id)) {
+                    setStatus("No pod\u00e9s quitar la \u00faltima lista activa", sticky = true)
+                    return@withLock
+                }
+                channelsBySource.remove(id)
+                store.update { current ->
+                    current.copy(sources = current.sources.filterNot { it.id == id })
+                }
+                rebuildCatalogFromActiveLists()
+                refreshPlaylistItems()
+                setStatus("Lista quitada: ${source.name}")
+            }
+        }
+    }
+
+    /** Texto de la fila "Listas de canales" de Ajustes. */
+    fun listsLabel(): String {
+        val total = playlists.value.size
+        val active = playlists.value.count { it.active }
+        return "$active de $total activas"
+    }
+
 
     /** Cambia el encuadre del video: ajustar -> rellenar -> ampliar. */
     fun cycleVideoFit() {
@@ -1542,6 +1828,8 @@ class TvController(
         if (longPress) {
             when (screen.value) {
                 Screen.PLAYER, Screen.GRID -> openQuality()
+                // En el selector de lista el OK largo quita la lista (dos veces).
+                Screen.LISTS -> requestRemoveList()
                 else -> toggleFavorite()
             }
             return
@@ -1586,6 +1874,7 @@ class TvController(
                 if (!serverRunning.value) startWebServer()
             }
             Screen.SETTINGS -> activateSettingsRow()
+            Screen.LISTS -> activateListsRow()
         }
     }
 
@@ -1782,6 +2071,7 @@ class TvController(
             Screen.SEARCH -> moveSearchFocus(code)
             Screen.MOSAIC -> moveMosaicFocus(code)
             Screen.SETTINGS -> moveSettingsFocus(code)
+            Screen.LISTS -> moveListsFocus(code)
             else -> Unit
         }
     }
@@ -1888,7 +2178,8 @@ class TvController(
             )
             store.update { it.copy(sources = it.sources + source) }
             channelsBySource[sourceId] = channels
-            applyChannels(channelsBySource.values.flatten())
+            applyChannels(activeChannels())
+            refreshPlaylistItems()
             channels.size
         }
     }
@@ -1907,7 +2198,8 @@ class TvController(
             )
             store.update { it.copy(sources = it.sources + source) }
             channelsBySource[sourceId] = channels
-            applyChannels(channelsBySource.values.flatten())
+            applyChannels(activeChannels())
+            refreshPlaylistItems()
             channels.size
         }
     }
@@ -1975,7 +2267,8 @@ class TvController(
             epgSource = epgSource.value,
             epgUpdatedAt = epgUpdatedAt.value,
             epgRefreshing = epgRefreshing.value,
-            playlistRefreshing = playlistRefreshing.value
+            playlistRefreshing = playlistRefreshing.value,
+            lists = playlists.value
         )
     }
 

@@ -27,6 +27,16 @@ type ChannelDto = {
   activeVariantId: string;
 };
 
+type PlaylistDto = {
+  id: string;
+  name: string;
+  url: string;
+  channelCount: number;
+  active: boolean;
+  bundled: boolean;
+  lastRefreshAt: number;
+};
+
 type PlaylistRefreshResult = {
   ok: boolean;
   added: number;
@@ -34,6 +44,7 @@ type PlaylistRefreshResult = {
   changed: number;
   sourcesRefreshed: number;
   sourcesFailed: number;
+  sourcesSkipped: number;
   message: string;
 };
 
@@ -65,6 +76,8 @@ type StateDto = {
   epgUpdatedAt: number;
   epgRefreshing: boolean;
   playlistRefreshing: boolean;
+  /** Las playlists guardadas y cuales estan activas. */
+  lists: PlaylistDto[];
   videoWidth: number;
   videoHeight: number;
 };
@@ -221,6 +234,7 @@ export function App() {
         changed: Number(res.changed || 0),
         sourcesRefreshed: Number(res.sourcesRefreshed || 0),
         sourcesFailed: Number(res.sourcesFailed || 0),
+        sourcesSkipped: Number(res.sourcesSkipped || 0),
         message: res.message || "",
       };
       setPlaylistResult(result);
@@ -233,6 +247,16 @@ export function App() {
       setMessage("Error: no se pudo actualizar la playlist");
     } finally {
       setPlaylistRefreshing(false);
+    }
+  };
+
+  const toggleList = async (id: string, active: boolean) => {
+    setMessage(active ? "Activando lista..." : "Apagando lista...");
+    try {
+      const res = await api("/api/list", { id, active, token: token() });
+      setMessage(res.ok ? res.message || "Listo" : "Error: " + (res.message || "no se pudo cambiar"));
+    } catch (e) {
+      setMessage("Error: no se pudo cambiar la lista");
     }
   };
 
@@ -329,6 +353,24 @@ export function App() {
               {playlistResult.message ? " · " + playlistResult.message : ""}
             </p>
           ) : null}
+          <label>Listas de canales (cual mira la TV)</label>
+          <ul class="lists">
+            {(state?.lists || []).map((l) => (
+              <li key={l.id} class={l.active ? "active" : ""}>
+                <div class="info">
+                  <strong>{l.name}</strong>
+                  <span>
+                    {l.channelCount + " canales"}
+                    {" \u00b7 " + (l.bundled ? "embebida" : l.url ? l.url.replace(/^https?:\/\//, "").split("/")[0] : "archivo")}
+                    {l.active ? "" : " \u00b7 apagada"}
+                  </span>
+                </div>
+                <button onClick={() => toggleList(l.id, !l.active)}>
+                  {l.active ? "Apagar" : "Activar"}
+                </button>
+              </li>
+            ))}
+          </ul>
           <label>URL de la guia EPG (XMLTV, puede ir .gz)</label>
           <div class="row">
             <input

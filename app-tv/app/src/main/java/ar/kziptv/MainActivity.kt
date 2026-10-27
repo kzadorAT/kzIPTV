@@ -37,16 +37,24 @@ class MainActivity : ComponentActivity() {
         /**
          * Inyecta una tecla desde el companion (por HTTP). Se reinyecta por el mismo
          * camino que el control remoto físico, asi el foco de Compose se mueve igual.
+         *
+         * Con [longPress] la tecla sale como "OK largo": la app mide el tiempo entre
+         * el DOWN y el UP (600 ms) y asi se puede, por ejemplo, pedir quitar una lista.
          */
-        fun injectKey(code: Int): Boolean {
+        fun injectKey(code: Int, longPress: Boolean = false): Boolean {
             val activity = current ?: return false
             val now = android.os.SystemClock.uptimeMillis()
             activity.runOnUiThread {
                 activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0))
-                activity.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0))
+                // El timestamp del UP es lo que marca la duracion de la pulsacion.
+                val up = if (longPress) now + LONG_PRESS_MS else now
+                activity.dispatchKeyEvent(KeyEvent(now, up, KeyEvent.ACTION_UP, code, 0))
             }
             return true
         }
+
+        /** Duracion que la app mira para distinguir un OK largo de uno corto. */
+        private const val LONG_PRESS_MS = 800L
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -89,7 +97,7 @@ class MainActivity : ComponentActivity() {
                 (
                     screen == Screen.GRID || screen == Screen.QUALITY ||
                         screen == Screen.SEARCH || screen == Screen.MOSAIC ||
-                        screen == Screen.SETTINGS
+                        screen == Screen.SETTINGS || screen == Screen.LISTS
                     )
             ) {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.onDpad(event.keyCode)
@@ -106,15 +114,23 @@ class MainActivity : ComponentActivity() {
                 return true
             }
             RemoteKeys.PROG_RED -> {
-                if (event.action == KeyEvent.ACTION_DOWN) controller.toggleZapMode()
+                // En el selector de lista el OK activa/apaga y el OK largo quita:
+                // las teclas de color quedan apagadas ahi.
+                if (event.action == KeyEvent.ACTION_DOWN && controller.screen.value != Screen.LISTS) {
+                    controller.toggleZapMode()
+                }
                 return true
             }
             RemoteKeys.PROG_YELLOW -> {
-                if (event.action == KeyEvent.ACTION_DOWN) controller.toggleFavorite()
+                if (event.action == KeyEvent.ACTION_DOWN && controller.screen.value != Screen.LISTS) {
+                    controller.toggleFavorite()
+                }
                 return true
             }
             RemoteKeys.PROG_GREEN -> {
-                if (event.action == KeyEvent.ACTION_DOWN) controller.openSearch()
+                if (event.action == KeyEvent.ACTION_DOWN && controller.screen.value != Screen.LISTS) {
+                    controller.openSearch()
+                }
                 return true
             }
             RemoteKeys.MENU, RemoteKeys.INFO -> {

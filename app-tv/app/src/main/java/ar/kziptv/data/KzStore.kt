@@ -32,7 +32,9 @@ data class PersistedSource(
     /** Contenido M3U cacheado para playlists subidas o descargadas. */
     val content: String = "",
     /** Ultima descarga exitosa de esta playlist (epoch ms). */
-    val lastRefreshAt: Long = 0
+    val lastRefreshAt: Long = 0,
+    /** true si el usuario mira esta lista (el catalogo solo usa las activas). */
+    val enabled: Boolean = true,
 )
 
 /**

@@ -3,6 +3,7 @@ package ar.kziptv.data.room
 import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.PersistedState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,6 +19,7 @@ class RoomStateMapperTest {
                     url = "https://example.test/ar.m3u",
                     bundled = true,
                     channelCount = 206,
+                    enabled = false,
                 ),
             ),
             favorites = listOf("fav-1", "fav-2"),
@@ -70,6 +72,7 @@ class RoomStateMapperTest {
                     channelCount = 206,
                     content = "#EXTM3U",
                     lastRefreshAt = 1234L,
+                    enabled = false,
                 ),
             ),
             channelNumbers = mapOf("c:tvg:canal.ar" to 7, "c:tvg:otro.ar" to 9),
@@ -81,5 +84,7 @@ class RoomStateMapperTest {
         assertTrue(rows.any { it.channelKey == "c:tvg:canal.ar" && it.number == 7 })
         assertTrue(rows.any { it.channelKey == "c:tvg:otro.ar" && it.number == 9 })
         assertEquals(1234L, RoomStateMapper.playlists(state).single().lastRefreshAt)
+        // El interruptor de la lista tambien se conserva.
+        assertFalse(RoomStateMapper.playlists(state).single().enabled)
     }
 }

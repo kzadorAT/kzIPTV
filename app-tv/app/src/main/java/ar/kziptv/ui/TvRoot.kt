@@ -112,7 +112,8 @@ fun TvRoot(controller: TvController) {
     // 20 tarjetas + logos) a 118-174 ms. Se usa el MISMO sitio de composicion
     // para que Compose conserve la grilla viva al cambiar de pantalla.
     val gridVisible = screen == Screen.GRID
-    val keepGrid = screen == Screen.GRID || screen == Screen.PLAYER
+    val keepGrid = screen == Screen.GRID || screen == Screen.PLAYER ||
+        screen == Screen.SETTINGS || screen == Screen.LISTS
 
     Box(Modifier.fillMaxSize()) {
         if (keepGrid) {
@@ -132,6 +133,7 @@ fun TvRoot(controller: TvController) {
             Screen.SEARCH -> SearchScreen(controller)
             Screen.MOSAIC -> MosaicScreen(controller)
             Screen.SETTINGS -> SettingsScreen(controller)
+            Screen.LISTS -> ListsScreen(controller)
         }
     }
 }
@@ -1238,6 +1240,111 @@ private fun MosaicTile(
 }
 
 /**
+ * Selector de lista: que playlists mira el usuario.
+ *
+ * OK activa o desactiva la lista enfocada; OK largo la quita (pide confirmacion
+ * con una segunda pulsacion). BACK vuelve a Ajustes.
+ */
+@Composable
+fun ListsScreen(controller: TvController) {
+    val playlists by controller.playlists.collectAsState()
+    val focus by controller.listsFocus.collectAsState()
+    val busy by controller.listsBusy.collectAsState()
+    val removing by controller.listsRemovingId.collectAsState()
+    val status by controller.status.collectAsState()
+
+    Column(
+        Modifier.fillMaxSize().background(KzBg).padding(horizontal = 24.dp, vertical = 18.dp)
+    ) {
+        Text(text = "Listas de canales", color = Color.White, fontSize = 28.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "OK activa o desactiva \u00b7 OK largo quita \u00b7 BACK para volver",
+            color = Color(0xFF56616F),
+            fontSize = 13.sp
+        )
+        Spacer(Modifier.height(10.dp))
+
+        if (playlists.isEmpty()) {
+            Text(
+                text = "No hay playlists guardadas",
+                color = Color(0xFF9FB0C3),
+                fontSize = 16.sp
+            )
+        } else {
+            playlists.forEachIndexed { index, item ->
+                val selected = index == focus
+                val quitting = removing == item.id
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (selected) Color(0xFF1B3A5C) else KzCard)
+                        .padding(horizontal = 18.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = item.name,
+                            color = if (selected) KzBlue else Color.White,
+                            fontSize = 17.sp,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = listSubtitle(item),
+                            color = Color(0xFF9FB0C3),
+                            fontSize = 13.sp,
+                            maxLines = 1
+                        )
+                    }
+                    Text(
+                        text = when {
+                            quitting -> "OK otra vez"
+                            item.active -> "ACTIVA"
+                            else -> "apagada"
+                        },
+                        color = when {
+                            quitting -> Color(0xFFFF8A80)
+                            item.active -> KzBlue
+                            else -> Color(0xFF56616F)
+                        },
+                        fontSize = 15.sp
+                    )
+                }
+                Spacer(Modifier.height(5.dp))
+            }
+        }
+
+        Spacer(Modifier.height(7.dp))
+        Text(
+            text = buildString {
+                append("Activas: " + playlists.count { it.active } + " de " + playlists.size)
+                if (busy) append(" \u00b7 actualizando\u2026")
+                if (status.isNotBlank()) append("\n" + status)
+            },
+            color = Color(0xFF56616F),
+            fontSize = 13.sp
+        )
+    }
+}
+
+/** Detalle de una lista: de donde sale, cuantos canales tiene y cuando se actualizo. */
+private fun listSubtitle(item: PlaylistDto): String {
+    val origen = when {
+        item.bundled -> "embebida"
+        item.url.isNotBlank() -> item.url.substringAfter("://").substringBefore('/')
+        else -> "archivo"
+    }
+    val fecha = if (item.lastRefreshAt > 0) {
+        java.text.SimpleDateFormat("dd/MM HH:mm", java.util.Locale.getDefault())
+            .format(java.util.Date(item.lastRefreshAt))
+    } else {
+        "sin actualizar"
+    }
+    return origen + " \u00b7 " + item.channelCount + " canales \u00b7 " + fecha
+}
+
+/**
  * Ajustes: server web (encendido/apagado), emparejamiento con QR, modo de
  * zap y encuadre del video. El foco lo maneja el controller (mismas reglas
  * que en la grilla: el control remoto y el companion se comportan igual).
@@ -1272,10 +1379,11 @@ fun SettingsScreen(controller: TvController) {
             Setting.VIDEO -> controller.videoFitLabel(fitMode)
             Setting.EPG -> controller.epgLabel()
             Setting.PLAYLIST -> (if (playlistRefreshing) "Actualizando\u2026" else "Actualizar")
+            Setting.LISTS -> controller.listsLabel()
         }
     }
 
-    // Seis filas + informacion: el padding compacto hace que todo entre en
+    // Siete filas + informacion: el padding compacto hace que todo entre en
     // una pantalla de TV de 540 dp de alto.
     Column(
         Modifier.fillMaxSize().background(KzBg).padding(horizontal = 24.dp, vertical = 18.dp)
@@ -1307,6 +1415,7 @@ fun SettingsScreen(controller: TvController) {
                         Setting.VIDEO -> "Video"
                         Setting.EPG -> "Guia EPG"
                         Setting.PLAYLIST -> "Actualizar playlist"
+                        Setting.LISTS -> "Listas de canales"
                     },
                     color = if (selected) KzBlue else Color.White,
                     fontSize = 17.sp,

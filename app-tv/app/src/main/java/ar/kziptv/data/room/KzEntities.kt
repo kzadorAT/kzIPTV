@@ -16,7 +16,9 @@ data class PlaylistEntity(
     /** Contenido M3U para fuentes subidas o descargadas por la app. */
     val content: String = "",
     /** Ultima descarga exitosa de esta playlist (epoch ms). */
-    val lastRefreshAt: Long = 0
+    val lastRefreshAt: Long = 0,
+    /** true si el usuario mira esta lista (el catalogo solo usa las activas). */
+    val enabled: Boolean = true,
 )
 
 /** Numero estable de un canal logico, indexado por su clave canonica. */

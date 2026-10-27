@@ -137,6 +137,17 @@ button.primary { background: var(--blue); color: #06131c; border-color: transpar
 .variants .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .variants .info strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .variants .info span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lists { list-style: none; margin: 10px 0 14px; padding: 0; }
+.lists li {
+  display: flex; align-items: center; gap: 10px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 10px; margin-bottom: 8px;
+}
+.lists li.active { border-color: var(--blue); background: #10222e; }
+.lists .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lists .info strong { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lists .info span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lists button { flex: none; }
+
 .vstatus { font-size: 11px; color: var(--muted); }
 .vstatus.dead { color: #ff8a80; }
 .vstatus.ok { color: #7ee787; }

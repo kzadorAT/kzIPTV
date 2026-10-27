@@ -52,6 +52,12 @@ data class EpgRequest(val url: String = "", val token: String? = null)
 data class RefreshRequest(val token: String? = null)
 
 @Serializable
+data class ListRequest(val id: String = "", val active: Boolean = true, val token: String? = null)
+
+@Serializable
+data class ListResponse(val ok: Boolean, val message: String = "")
+
+@Serializable
 data class EpgResponse(
     val ok: Boolean,
     val message: String = "",
@@ -69,6 +75,10 @@ data class CommandRequest(
     val enabled: Boolean? = null,
     val text: String? = null,
     val category: String? = null,
+    /** Id de la playlist a activar o apagar (comando "list"). */
+    val listId: String? = null,
+    /** El comando "key" se manda como pulsacion larga (OK largo). */
+    val longPress: Boolean = false,
     val token: String? = null
 )
 
@@ -155,6 +165,20 @@ class EmbeddedServer(
                     call.respond(SourceResponse(ok = true, count = count, message = "OK"))
                 } catch (e: Exception) {
                     call.respond(SourceResponse(ok = false, message = e.message ?: "Error"))
+                }
+            }
+
+            post("/api/list") {
+                val request = call.receive<ListRequest>()
+                if (!validToken(request.token)) {
+                    call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "token invalido"))
+                    return@post
+                }
+                try {
+                    val message = controller.setPlaylistEnabled(request.id, request.active)
+                    call.respond(ListResponse(ok = true, message = message))
+                } catch (e: Exception) {
+                    call.respond(ListResponse(ok = false, message = e.message ?: "Error"))
                 }
             }
 
@@ -301,13 +325,15 @@ class EmbeddedServer(
                         167 -> controller.zap(-1)
                         185 -> controller.toggleFavorite()
                         183 -> controller.toggleZapMode()
-                        23, 66 -> controller.onOk(false)
                         // BACK se reinyecta como tecla real: asi el celular puede
                         // hacer el mismo BACK doble que cierra la app.
-                        4 -> ar.kziptv.MainActivity.injectKey(command.code)
+                        4 -> ar.kziptv.MainActivity.injectKey(command.code, command.longPress)
                         82, 186 -> controller.openPairing()
                         // Flechas: se reinyectan como tecla real para que Compose mueva el foco.
-                        19, 20, 21, 22 -> ar.kziptv.MainActivity.injectKey(command.code)
+                        19, 20, 21, 22 -> ar.kziptv.MainActivity.injectKey(command.code, command.longPress)
+                        // OK (23) y ENTER (66) tambien se reinyectan: con longPress
+                        // salen como pulsacion larga, como la del control remoto.
+                        23, 66 -> ar.kziptv.MainActivity.injectKey(command.code, command.longPress)
                         else -> Unit
                     }
                     "zap" -> controller.zap(command.delta ?: 1)
@@ -329,6 +355,9 @@ class EmbeddedServer(
                         if (epgUrl.isNotBlank()) controller.setEpgUrl(epgUrl) else controller.refreshEpg()
                     }
                     "favorite" -> command.channelId?.let { applyFavorite(it, command.enabled) }
+                    "list" -> command.listId?.let {
+                        controller.requestPlaylistEnabled(it, command.enabled ?: true)
+                    }
                     "text" -> controller.setQuery(command.text.orEmpty())
                     "search" -> {
                         controller.setQuery(command.text.orEmpty())

@@ -19,8 +19,8 @@ class KzDatabaseMigrationTest {
     )
 
     @Test
-    fun migraV1AV5SinPerderDatos() {
-        val dbName = "migration-room-v1-v5"
+    fun migraV1AV6SinPerderDatos() {
+        val dbName = "migration-room-v1-v6"
         helper.createDatabase(dbName, 1).apply {
             execSQL(
                 "INSERT INTO playlists " +
@@ -40,12 +40,13 @@ class KzDatabaseMigrationTest {
 
         val migrated = helper.runMigrationsAndValidate(
             dbName,
-            5,
+            6,
             true,
             KzDatabase.MIGRATION_1_2,
             KzDatabase.MIGRATION_2_3,
             KzDatabase.MIGRATION_3_4,
             KzDatabase.MIGRATION_4_5,
+            KzDatabase.MIGRATION_5_6,
         )
 
         migrated.query("SELECT content FROM playlists WHERE id='bundled-ar'").use { cursor ->
@@ -72,6 +73,12 @@ class KzDatabaseMigrationTest {
         migrated.query("SELECT number FROM channel_numbers WHERE channelKey='c:tvg:canal.ar'").use { cursor ->
             assertTrue(cursor.moveToFirst())
             assertEquals(7, cursor.getInt(0))
+        }
+        // El esquema 6 suma el interruptor de la lista: las playlists viejas
+        // quedan activas (DEFAULT 1).
+        migrated.query("SELECT enabled FROM playlists WHERE id='bundled-ar'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals(1, cursor.getInt(0))
         }
         migrated.execSQL(
             "INSERT INTO watch_history " +

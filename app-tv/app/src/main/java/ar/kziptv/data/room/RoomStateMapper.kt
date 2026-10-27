@@ -16,6 +16,7 @@ internal object RoomStateMapper {
                 position = index,
                 content = source.content,
                 lastRefreshAt = source.lastRefreshAt,
+                enabled = source.enabled,
             )
         }
 
@@ -88,6 +89,7 @@ internal object RoomStateMapper {
                     channelCount = it.channelCount,
                     content = it.content,
                     lastRefreshAt = it.lastRefreshAt,
+                    enabled = it.enabled,
                 )
             },
             favorites = favorites.sortedBy { it.position }.map { it.channelId },
