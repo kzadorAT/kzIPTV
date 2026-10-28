@@ -23,6 +23,7 @@ import ar.kziptv.data.PersistedSource
 import ar.kziptv.data.SourceRepository
 import ar.kziptv.core.nav.GridNavigator
 import ar.kziptv.core.nav.NumberEntry
+import ar.kziptv.core.nav.NumberPad
 import ar.kziptv.core.nav.SurfPlanner
 import ar.kziptv.core.nav.RetryPolicy
 import ar.kziptv.input.RemoteKeys
@@ -45,10 +46,21 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import java.util.zip.GZIPInputStream
 
-enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS, LISTS }
+enum class Screen { PLAYER, GRID, SETUP, QUALITY, SEARCH, MOSAIC, SETTINGS, LISTS, CHANNEL_MENU, NUMBER_PAD }
 
 /** Filas de la pantalla de ajustes (el orden es el de navegacion). */
 enum class Setting { SERVER, PAIRING, ZAP, VIDEO, EPG, PLAYLIST, LISTS }
+
+/**
+ * Secciones de la barra lateral: la columna fija de la izquierda de la grilla.
+ *
+ * Es la casa de todo lo que antes solo se llegaba con las teclas de color
+ * (ROJO/VERDE/AZUL/MENU), porque hay controles remotos que no las tienen.
+ */
+enum class Rail { CANALES, FAVORITOS, ZAP, BUSCAR, LISTAS, COMPARAR, AJUSTES, IR_A_CANAL }
+
+/** Acciones del menu contextual de un canal (OK largo). */
+enum class ChannelAction { REPRODUCIR, FAVORITO, CALIDAD, COMPARAR }
 
 /** Una variante (feed/calidad) de un canal logico. */
 @Serializable
@@ -238,6 +250,33 @@ class TvController(
     /** Categoria enfocada en la fila de chips (null = el foco esta en la grilla). */
     val focusedCategory = MutableStateFlow<String?>(null)
 
+    /** La barra lateral tiene el foco (LEFT la enfoca, RIGHT/BACK la dejan). */
+    val railActive = MutableStateFlow(false)
+
+    /** Seccion enfocada de la barra lateral. */
+    val railFocus = MutableStateFlow(0)
+
+    /** Foco dentro del menu contextual del canal. */
+    val channelMenuFocus = MutableStateFlow(0)
+
+    /** El canal del menu contextual (id del grupo logico). */
+    val channelMenuTarget = MutableStateFlow<String?>(null)
+
+    /** El menu contextual muestra "Reproducir"? (false cuando se abre desde el video). */
+    val channelMenuCanPlay = MutableStateFlow(true)
+
+    /** El menu contextual se abrio desde el video (el video queda de fondo). */
+    val channelMenuFromPlayer = MutableStateFlow(false)
+
+    /** Foco dentro del teclado numerico en pantalla. */
+    val keypadFocus = MutableStateFlow(0)
+
+    /** El numero escrito en el teclado en pantalla. */
+    val keypadBuffer = MutableStateFlow("")
+
+    /** Mostrar solo los favoritos en la grilla (seccion FAVORITOS de la barra). */
+    val favoritesOnly = MutableStateFlow(false)
+
     val qualityTarget = MutableStateFlow<ChannelGroup?>(null)
 
     /**
@@ -314,6 +353,15 @@ class TvController(
 
     /** Pantalla de la que se abrio el emparejamiento (BACK vuelve ahi). */
     private var setupBackScreen: Screen = Screen.GRID
+
+    /** Pantalla de la que se abrio el selector de calidad (BACK vuelve ahi). */
+    private var qualityBackScreen: Screen = Screen.PLAYER
+
+    /** Pantalla de la que se abrio el selector de listas (BACK vuelve ahi). */
+    private var listsBackScreen: Screen = Screen.SETTINGS
+
+    /** Pantalla de la que se abrio el menu contextual (BACK vuelve ahi). */
+    private var menuBackScreen: Screen = Screen.GRID
 
     /** Server web embebido: lo enciende y apaga el usuario. */
     private var webServer: EmbeddedServer? = null
@@ -1102,6 +1150,18 @@ class TvController(
             favorites.contains(group.id) ||
             group.variants.any { favorites.contains(it.stateKey) || favorites.contains(it.channelId) }
 
+    /**
+     * Los canales que muestra la grilla: la categoria elegida mas el filtro de
+     * favoritos. La UI y el controller usan la MISMA lista: si no, el foco
+     * apuntaria a un canal que no es el que se ve en pantalla.
+     */
+    fun visibleChannels(): List<ChannelGroup> {
+        val list = catalog.value.inCategory(category.value)
+        if (!favoritesOnly.value) return list
+        val favs = favorites.value
+        return list.filter { isFavorite(it, favs) }
+    }
+
     fun toggleFavorite(groupId: String? = null) {
         val id = groupId ?: focusedGroupId.value ?: currentGroup.value?.id ?: return
         val group = catalog.value.groupByStateKey[id]
@@ -1143,6 +1203,7 @@ class TvController(
         if (target != null) focusedGroupId.value = target
         // Al reabrir la grilla el foco vuelve a estar en las tarjetas, no en un chip.
         focusedCategory.value = null
+        ensureGridFocus()
         screen.value = Screen.GRID
     }
 
@@ -1159,15 +1220,28 @@ class TvController(
                 " (pantalla " + screen.value + ")"
         )
         focusedCategory.value = null
-        return when (screen.value) {
+        val handled = when (screen.value) {
             Screen.SEARCH -> { screen.value = Screen.GRID; true }
             Screen.MOSAIC -> { closeMosaic(); true }
-            Screen.QUALITY -> { screen.value = Screen.PLAYER; true }
+            Screen.QUALITY -> { screen.value = qualityBackScreen; true }
             Screen.SETUP -> { screen.value = setupBackScreen; true }
             Screen.SETTINGS -> { screen.value = settingsBackScreen; true }
             Screen.LISTS -> {
                 listsRemovingId.value = null
-                screen.value = Screen.SETTINGS
+                screen.value = listsBackScreen
+                true
+            }
+            Screen.CHANNEL_MENU -> {
+                screen.value = menuBackScreen
+                true
+            }
+            Screen.NUMBER_PAD -> {
+                // BACK borra el numero escrito; si no hay nada, vuelve a la grilla.
+                if (keypadBuffer.value.isNotEmpty()) {
+                    keypadBuffer.value = NumberPad.backspace(keypadBuffer.value)
+                } else {
+                    screen.value = Screen.GRID
+                }
                 true
             }
             // Si el canal se eligio desde una lista (grilla, busqueda o mosaico),
@@ -1181,8 +1255,35 @@ class TvController(
                 screen.value = playerBackScreen
                 true
             }
-            Screen.GRID -> false
+            Screen.GRID -> {
+                // Con la barra lateral abierta, BACK la cierra (no sale de la app).
+                if (railActive.value) {
+                    closeRail()
+                    true
+                } else {
+                    false
+                }
+            }
             else -> { screen.value = Screen.GRID; true }
+        }
+        // Al volver a la grilla el foco tiene que estar en un canal real:
+        // si no, el OK (y el OK largo) no tendrian a que accion.
+        if (screen.value == Screen.GRID) ensureGridFocus()
+        return handled
+    }
+
+    /**
+     * Deja el foco de la grilla en un canal visible.
+     *
+     * Si el foco estaba vacio (por ejemplo al volver de Ajustes) o en un canal
+     * que el filtro actual esconde, se mueve al primer canal visible.
+     */
+    private fun ensureGridFocus() {
+        val visible = visibleChannels()
+        if (visible.isEmpty()) return
+        val current = focusedGroupId.value
+        if (current == null || visible.none { it.id == current }) {
+            focusedGroupId.value = visible.first().id
         }
     }
 
@@ -1210,8 +1311,8 @@ class TvController(
      * llena solo. Los tiles son los canales que siguen al que estas mirando
      * (y los favoritos van primero).
      */
-    fun openMosaic() {
-        val list = mosaicSource()
+    fun openMosaic(startAt: ChannelGroup? = null) {
+        val list = mosaicSource(startAt)
         if (list.isEmpty()) {
             setStatus("No hay canales para comparar")
             return
@@ -1266,10 +1367,10 @@ class TvController(
      * Empieza por los favoritos (son los que el usuario ya eligio) y completa con
      * los canales que siguen al que esta mirando, hasta llenar los tiles.
      */
-    private fun mosaicSource(): List<ChannelGroup> {
+    private fun mosaicSource(startAt: ChannelGroup? = null): List<ChannelGroup> {
         val active = activeList()
         if (active.isEmpty()) return emptyList()
-        val current = currentGroup.value
+        val current = startAt ?: currentGroup.value
         val start = active.indexOfFirst { it.id == current?.id }
         // Rotacion: el mosaico arranca por el canal que estas mirando.
         val rotated = if (start >= 0) {
@@ -1563,8 +1664,9 @@ class TvController(
     // Selector de lista
     // ---------------------------------------------------------------------
 
-    /** Abre el selector de playlists (BACK vuelve a Ajustes). */
-    fun openLists() {
+    /** Abre el selector de playlists (BACK vuelve a [from]). */
+    fun openLists(from: Screen = Screen.SETTINGS) {
+        listsBackScreen = from
         listsFocus.value = 0
         listsRemovingId.value = null
         screen.value = Screen.LISTS
@@ -1602,6 +1704,206 @@ class TvController(
         }
         listsRemovingId.value = item.id
         setStatus("OK largo otra vez para quitar ${item.name}")
+    }
+
+    // ---------------------------------------------------------------------
+    // Barra lateral y menu contextual (control remoto sin teclas de color)
+    // ---------------------------------------------------------------------
+
+    /** Abre la barra lateral (LEFT en la primera columna de la grilla). */
+    fun openRail() {
+        railActive.value = true
+    }
+
+    /** Cierra la barra lateral (RIGHT o BACK). */
+    fun closeRail() {
+        railActive.value = false
+    }
+
+    /** Mueve el foco dentro de la barra lateral. */
+    private fun moveRailFocus(code: Int) {
+        val count = Rail.entries.size
+        when (code) {
+            RemoteKeys.DPAD_UP -> railFocus.value = (railFocus.value - 1 + count) % count
+            RemoteKeys.DPAD_DOWN -> railFocus.value = (railFocus.value + 1) % count
+            // RIGHT: de vuelta a la grilla.
+            RemoteKeys.DPAD_RIGHT -> closeRail()
+        }
+    }
+
+    /** Ejecuta la seccion enfocada de la barra lateral. */
+    private fun activateRailItem() {
+        when (Rail.entries[railFocus.value.coerceIn(0, Rail.entries.size - 1)]) {
+            Rail.CANALES -> {
+                favoritesOnly.value = false
+                category.value = null
+                focusedCategory.value = null
+                closeRail()
+                setStatus("Todos los canales")
+            }
+            Rail.FAVORITOS -> {
+                favoritesOnly.value = !favoritesOnly.value
+                // El foco tiene que seguir apuntando a un canal visible.
+                val visible = visibleChannels()
+                val current = focusedGroupId.value
+                if (visible.isNotEmpty() && visible.none { it.id == current }) {
+                    focusedGroupId.value = visible.first().id
+                }
+                // La barra se cierra: el filtro se ve en la grilla de al lado.
+                closeRail()
+                setStatus(if (favoritesOnly.value) "Solo favoritos" else "Todos los canales")
+            }
+            Rail.ZAP -> {
+                closeRail()
+                toggleZapMode()
+            }
+            Rail.BUSCAR -> {
+                closeRail()
+                openSearch()
+            }
+            Rail.LISTAS -> {
+                closeRail()
+                openLists(Screen.GRID)
+            }
+            Rail.COMPARAR -> {
+                closeRail()
+                openMosaic()
+            }
+            Rail.AJUSTES -> {
+                closeRail()
+                openSettings()
+            }
+            Rail.IR_A_CANAL -> {
+                closeRail()
+                openNumberPad()
+            }
+        }
+    }
+
+    /** Abre el menu contextual de un canal (OK largo). */
+    fun openChannelMenu(groupId: String?, from: Screen) {
+        if (groupId == null) return
+        channelMenuTarget.value = groupId
+        channelMenuCanPlay.value = from != Screen.PLAYER
+        channelMenuFromPlayer.value = from == Screen.PLAYER
+        channelMenuFocus.value = 0
+        menuBackScreen = from
+        screen.value = Screen.CHANNEL_MENU
+    }
+
+    /** Las acciones del menu contextual (sin "Reproducir" si ya se esta viendo). */
+    fun channelMenuItems(): List<ChannelAction> =
+        if (channelMenuCanPlay.value) {
+            listOf(
+                ChannelAction.REPRODUCIR,
+                ChannelAction.FAVORITO,
+                ChannelAction.CALIDAD,
+                ChannelAction.COMPARAR
+            )
+        } else {
+            listOf(ChannelAction.FAVORITO, ChannelAction.CALIDAD, ChannelAction.COMPARAR)
+        }
+
+    /** El canal del menu contextual (con sus datos). */
+    fun channelMenuGroup(): ChannelGroup? {
+        val id = channelMenuTarget.value ?: return null
+        return catalog.value.groupById[id] ?: catalog.value.groupOf(id)
+    }
+
+    /** Mueve el foco dentro del menu contextual. */
+    private fun moveChannelMenuFocus(code: Int) {
+        val count = channelMenuItems().size
+        if (count == 0) return
+        val index = channelMenuFocus.value.coerceIn(0, count - 1)
+        when (code) {
+            RemoteKeys.DPAD_DOWN -> channelMenuFocus.value = (index + 1) % count
+            RemoteKeys.DPAD_UP -> channelMenuFocus.value = (index - 1 + count) % count
+        }
+    }
+
+    /** Ejecuta la accion enfocada del menu contextual. */
+    private fun activateChannelMenuItem() {
+        val group = channelMenuGroup() ?: return
+        val items = channelMenuItems()
+        when (items[channelMenuFocus.value.coerceIn(0, items.size - 1)]) {
+            ChannelAction.REPRODUCIR -> {
+                closeChannelMenu()
+                playerBackScreen = Screen.GRID
+                play(group)
+            }
+            // El menu queda abierto: se ve como cambio el favorito.
+            ChannelAction.FAVORITO -> toggleFavorite(group.id)
+            ChannelAction.CALIDAD -> {
+                closeChannelMenu()
+                openQuality(group)
+            }
+            ChannelAction.COMPARAR -> {
+                closeChannelMenu()
+                openMosaic(group)
+            }
+        }
+    }
+
+    /** Cierra el menu contextual y vuelve a donde se abrio. */
+    private fun closeChannelMenu() {
+        channelMenuTarget.value = null
+        screen.value = menuBackScreen
+    }
+
+    // ---------------------------------------------------------------------
+    // Teclado numerico en pantalla (ir a canal # sin teclas de numeros)
+    // ---------------------------------------------------------------------
+
+    /** Abre el teclado numerico en pantalla. */
+    fun openNumberPad() {
+        keypadFocus.value = 0
+        keypadBuffer.value = ""
+        screen.value = Screen.NUMBER_PAD
+    }
+
+    /** Mueve el foco dentro del teclado (3 columnas x 4 filas). */
+    private fun moveKeypadFocus(code: Int) {
+        val move = GridNavigator.move(keypadFocus.value, NumberPad.CELLS, NumberPad.COLUMNS, code)
+        keypadFocus.value = move.index
+    }
+
+    /** Presiona la celda enfocada del teclado. */
+    private fun pressKeypad() {
+        val index = keypadFocus.value
+        when {
+            NumberPad.isDelete(index) ->
+                keypadBuffer.value = NumberPad.backspace(keypadBuffer.value)
+            NumberPad.isGo(index) -> confirmKeypadNumber()
+            else -> NumberPad.digitAt(index)?.let {
+                keypadBuffer.value = NumberPad.append(keypadBuffer.value, it)
+            }
+        }
+    }
+
+    /** El canal que corresponde al numero escrito (null si no existe). */
+    fun keypadMatch(): ChannelGroup? {
+        val buffer = keypadBuffer.value
+        if (buffer.isBlank()) return null
+        return NumberEntry.resolve(catalog.value, buffer)
+    }
+
+    /** Reproduce el canal del numero escrito (la celda "ir"). */
+    private fun confirmKeypadNumber() {
+        val buffer = keypadBuffer.value
+        if (buffer.isBlank()) {
+            setStatus("Escribi un numero de canal", sticky = true)
+            return
+        }
+        val group = NumberEntry.resolve(catalog.value, buffer)
+        keypadBuffer.value = ""
+        screen.value = Screen.GRID
+        if (group == null) {
+            setStatus("No hay ningun canal con el numero $buffer", sticky = true)
+            return
+        }
+        focusedGroupId.value = group.id
+        playerBackScreen = Screen.GRID
+        play(group)
     }
 
     /**
@@ -1782,6 +2084,7 @@ class TvController(
             setStatus("No hay canal seleccionado")
             return
         }
+        qualityBackScreen = screen.value
         qualityTarget.value = enrich(target)
         val active = currentVariant.value?.channelId
         focusedVariantId.value = if (active != null && target.variants.any { it.channelId == active }) {
@@ -1827,7 +2130,14 @@ class TvController(
     fun onOk(longPress: Boolean) {
         if (longPress) {
             when (screen.value) {
-                Screen.PLAYER, Screen.GRID -> openQuality()
+                // OK largo: menu contextual del canal (favorito, calidad, comparar).
+                Screen.GRID ->
+                    // Con la barra abierta el OK largo no hace nada: la seccion
+                    // enfocada se activa con un OK corto.
+                    if (!railActive.value && focusedCategory.value == null) {
+                        openChannelMenu(focusedGroupId.value, Screen.GRID)
+                    }
+                Screen.PLAYER -> openChannelMenu(currentGroup.value?.id, Screen.PLAYER)
                 // En el selector de lista el OK largo quita la lista (dos veces).
                 Screen.LISTS -> requestRemoveList()
                 else -> toggleFavorite()
@@ -1836,6 +2146,10 @@ class TvController(
         }
         when (screen.value) {
             Screen.GRID -> {
+                if (railActive.value) {
+                    activateRailItem()
+                    return
+                }
                 val chip = focusedCategory.value
                 if (chip != null) {
                     setCategory(if (chip.isEmpty()) null else chip)
@@ -1875,6 +2189,8 @@ class TvController(
             }
             Screen.SETTINGS -> activateSettingsRow()
             Screen.LISTS -> activateListsRow()
+            Screen.CHANNEL_MENU -> activateChannelMenuItem()
+            Screen.NUMBER_PAD -> pressKeypad()
         }
     }
 
@@ -2072,6 +2388,8 @@ class TvController(
             Screen.MOSAIC -> moveMosaicFocus(code)
             Screen.SETTINGS -> moveSettingsFocus(code)
             Screen.LISTS -> moveListsFocus(code)
+            Screen.CHANNEL_MENU -> moveChannelMenuFocus(code)
+            Screen.NUMBER_PAD -> moveKeypadFocus(code)
             else -> Unit
         }
     }
@@ -2099,11 +2417,21 @@ class TvController(
         private set
 
     private fun moveGridFocus(code: Int) {
+        // La barra lateral tiene el foco: el D-pad se mueve adentro de ella.
+        if (railActive.value) {
+            moveRailFocus(code)
+            return
+        }
         val chip = focusedCategory.value
         if (chip != null) {
             // El foco esta en la fila de categorias.
             val chips = listOf("") + catalog.value.categories
             val index = chips.indexOf(chip).let { if (it < 0) 0 else it }
+            // LEFT en el primer chip: la barra lateral.
+            if (code == RemoteKeys.DPAD_LEFT && index == 0) {
+                openRail()
+                return
+            }
             val move = GridNavigator.moveChip(index, chips.size, code)
             if (move.toGrid) {
                 focusedCategory.value = null
@@ -2116,10 +2444,15 @@ class TvController(
             )
             return
         }
-        val list = catalog.value.inCategory(category.value)
+        val list = visibleChannels()
         if (list.isEmpty()) return
         val index = list.indexOfFirst { it.id == focusedGroupId.value }.let { if (it < 0) 0 else it }
         val columns = gridColumns.value.coerceAtLeast(1)
+        // LEFT en la primera columna: la barra lateral.
+        if (code == RemoteKeys.DPAD_LEFT && index % columns == 0) {
+            openRail()
+            return
+        }
         val move = GridNavigator.move(index, list.size, columns, code)
         if (move.toChips) {
             // Primera fila: sube a la fila de categorias, arrancando por la categoria

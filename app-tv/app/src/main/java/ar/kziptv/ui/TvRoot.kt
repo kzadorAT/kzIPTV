@@ -77,6 +77,7 @@ import kotlinx.coroutines.delay
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
 import ar.kziptv.core.model.ChannelGroup
+import ar.kziptv.core.nav.NumberPad
 import ar.kziptv.core.model.ChannelVariant
 
 val KzBlue = Color(0xFF38BDF8)
@@ -111,9 +112,14 @@ fun TvRoot(controller: TvController) {
     // donde estaba. Medido en la TV: abrir la grilla paso de ~2,4 s (recomponer
     // 20 tarjetas + logos) a 118-174 ms. Se usa el MISMO sitio de composicion
     // para que Compose conserve la grilla viva al cambiar de pantalla.
-    val gridVisible = screen == Screen.GRID
+    // El menu contextual se dibuja ENCIMA de la grilla (o del video): lo de
+    // fondo no se recompone ni se interrumpe.
+    val menuFromPlayer by controller.channelMenuFromPlayer.collectAsState()
+    val gridVisible = screen == Screen.GRID ||
+        (screen == Screen.CHANNEL_MENU && !menuFromPlayer)
     val keepGrid = screen == Screen.GRID || screen == Screen.PLAYER ||
-        screen == Screen.SETTINGS || screen == Screen.LISTS
+        screen == Screen.SETTINGS || screen == Screen.LISTS ||
+        screen == Screen.CHANNEL_MENU || screen == Screen.NUMBER_PAD
 
     Box(Modifier.fillMaxSize()) {
         if (keepGrid) {
@@ -134,6 +140,12 @@ fun TvRoot(controller: TvController) {
             Screen.MOSAIC -> MosaicScreen(controller)
             Screen.SETTINGS -> SettingsScreen(controller)
             Screen.LISTS -> ListsScreen(controller)
+            Screen.CHANNEL_MENU -> {
+                // El video sigue detras del menu: no se corta la reproduccion.
+                if (menuFromPlayer) PlayerScreen(controller)
+                ChannelMenuOverlay(controller)
+            }
+            Screen.NUMBER_PAD -> NumberPadScreen(controller)
         }
     }
 }
@@ -328,14 +340,20 @@ fun GridScreen(
     // cuantas hay por fila para mover el foco de fila en fila.
     val configuration = LocalConfiguration.current
     val columns = remember(configuration.screenWidthDp) {
-        val available = configuration.screenWidthDp - 48 // padding 24.dp x 2
-        ((available + 12) / (200 + 12)).coerceAtLeast(1)
+        val available = configuration.screenWidthDp - RAIL_WIDTH.value.toInt() - 48 // padding 24.dp x 2
+        ((available + 12) / (236 + 12)).coerceAtLeast(1)
     }
     LaunchedEffect(columns) { controller.setGridColumns(columns) }
 
     // La lista filtrada se memoriza: sin esto se reconstruye en cada
     // recomposicion de la grilla (y obliga a recomponer las tarjetas).
-    val list = remember(catalog, selectedCategory) { catalog.inCategory(selectedCategory) }
+    // El filtro de favoritos vive en el controller: la UI y el foco usan la
+    // MISMA lista (si no, el foco apuntaria a un canal que no se ve).
+    val favoritesOnly by controller.favoritesOnly.collectAsState()
+    val zapFavoritesOnly by controller.zapFavoritesOnly.collectAsState()
+    val list = remember(catalog, selectedCategory, favoritesOnly, favoritesState.value) {
+        controller.visibleChannels()
+    }
 
     // El foco lo maneja el controller (navegacion determinista). Aca solo se
     // scrollea lo justo para que el canal enfocado quede a la vista.
@@ -361,99 +379,107 @@ fun GridScreen(
     }
 
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().background(KzBg).padding(24.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(text = "kzIPTV", color = KzBlue, fontSize = 30.sp)
-                Text(
-                    text = "   ${list.size} canales" +
-                        (if (catalog.variantCount > catalog.groups.size) " / ${catalog.variantCount} feeds" else "") +
-                        (if (controller.zapFavoritesOnly.value) " / zap: FAVORITOS" else ""),
-                    color = Color(0xFF7C8899),
-                    fontSize = 16.sp
-                )
-            }
+        Row(Modifier.fillMaxSize()) {
+            // La barra lateral: la columna de secciones (LEFT la enfoca).
+            RailColumn(controller)
 
-            Spacer(Modifier.height(12.dp))
-
-            LazyRow(state = chipState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                item {
-                    CategoryChip(
-                        label = "Todos",
-                        selected = selectedCategory == null,
-                        focused = focusedCategory == "",
-                        onClick = {
-                            controller.setCategory(null)
-                            controller.focusGrid()
-                        }
+            Box(Modifier.weight(1f).fillMaxHeight()) {
+                Column(Modifier.fillMaxSize().padding(24.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = "${list.size} canales" +
+                            (if (catalog.variantCount > catalog.groups.size) " / ${catalog.variantCount} feeds" else "") +
+                            (if (favoritesOnly) " / solo FAVORITOS" else "") +
+                            (if (zapFavoritesOnly) " / zap: FAVORITOS" else ""),
+                        color = Color(0xFF7C8899),
+                        fontSize = 16.sp
                     )
                 }
-                items(catalog.categories.size) { index ->
-                    val category = catalog.categories[index]
-                    CategoryChip(
-                        label = category,
-                        selected = selectedCategory == category,
-                        focused = focusedCategory == category,
-                        onClick = {
-                            controller.setCategory(category)
-                            controller.focusGrid()
-                        }
-                    )
+
+                Spacer(Modifier.height(12.dp))
+
+                LazyRow(state = chipState, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    item {
+                        CategoryChip(
+                            label = "Todos",
+                            selected = selectedCategory == null,
+                            focused = focusedCategory == "",
+                            onClick = {
+                                controller.setCategory(null)
+                                controller.focusGrid()
+                            }
+                        )
+                    }
+                    items(catalog.categories.size) { index ->
+                        val category = catalog.categories[index]
+                        CategoryChip(
+                            label = category,
+                            selected = selectedCategory == category,
+                            focused = focusedCategory == category,
+                            onClick = {
+                                controller.setCategory(category)
+                                controller.focusGrid()
+                            }
+                        )
+                    }
                 }
-            }
 
-            Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
 
-            LazyVerticalGrid(
-                state = gridState,
-                columns = GridCells.Fixed(columns),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                items(list.size, key = { index -> list[index].id }) { index ->
-                    val group = list[index]
-                    // Cada tarjeta deriva su propio estado: al mover el foco solo
-                    // se recompone la que entra y la que sale (no las 20 visibles).
-                    val focused by remember(group.id) {
-                        derivedStateOf {
-                            focusedIdState.value == group.id && focusedCategory == null
-                        }
-                    }
-                    val favorite by remember(group.id) {
-                        derivedStateOf { controller.isFavorite(group, favoritesState.value) }
-                    }
-                    val active by remember(group.id) {
-                        derivedStateOf { currentState.value?.id == group.id }
-                    }
-                    val measured by remember(group.id) {
-                        derivedStateOf {
-                            val currentGroup = currentState.value
-                            if (currentGroup?.id == group.id && videoWidthState.value > 0) {
-                                "${videoHeightState.value}p"
-                            } else {
-                                group.variants.firstOrNull { it.channelId == group.activeVariantId }
-                                    ?.measured?.takeIf { it.isNotBlank() }
-                                    ?.let { it.substringAfter('x') + "p" } ?: ""
+                LazyVerticalGrid(
+                    state = gridState,
+                    columns = GridCells.Fixed(columns),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    // weight y no fillMaxSize: asi la linea de ayuda entra en pantalla.
+                    modifier = Modifier.fillMaxWidth().weight(1f)
+                ) {
+                    items(list.size, key = { index -> list[index].id }) { index ->
+                        val group = list[index]
+                        // Cada tarjeta deriva su propio estado: al mover el foco solo
+                        // se recompone la que entra y la que sale (no las 20 visibles).
+                        val focused by remember(group.id) {
+                            derivedStateOf {
+                                focusedIdState.value == group.id && focusedCategory == null
                             }
                         }
+                        val favorite by remember(group.id) {
+                            derivedStateOf { controller.isFavorite(group, favoritesState.value) }
+                        }
+                        val active by remember(group.id) {
+                            derivedStateOf { currentState.value?.id == group.id }
+                        }
+                        val measured by remember(group.id) {
+                            derivedStateOf {
+                                val currentGroup = currentState.value
+                                if (currentGroup?.id == group.id && videoWidthState.value > 0) {
+                                    "${videoHeightState.value}p"
+                                } else {
+                                    group.variants.firstOrNull { it.channelId == group.activeVariantId }
+                                        ?.measured?.takeIf { it.isNotBlank() }
+                                        ?.let { it.substringAfter('x') + "p" } ?: ""
+                                }
+                            }
+                        }
+                        ChannelCard(
+                            controller = controller,
+                            group = group,
+                            favorite = favorite,
+                            active = active,
+                            focused = focused,
+                            measuredQuality = measured
+                        )
                     }
-                    ChannelCard(
-                        controller = controller,
-                        group = group,
-                        favorite = favorite,
-                        active = active,
-                        focused = focused,
-                        measuredQuality = measured
-                    )
+                }
+
+                Text(
+                    text = "OK reproducir \u00b7 OK largo acciones \u00b7 LEFT secciones \u00b7 BACK volver",
+                    color = Color(0xFF56616F),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 10.dp)
+                )
                 }
             }
-
-            Text(
-                text = "OK reproducir \u00b7 OK largo calidad \u00b7 AMARILLO favorito \u00b7 ROJO zap favoritos \u00b7 AZUL ajustes",
-                color = Color(0xFF56616F),
-                fontSize = 13.sp,
-                modifier = Modifier.padding(top = 10.dp)
-            )
         }
 
         // Aviso de "BACK otra vez para salir": la app se cierra de verdad.
@@ -881,8 +907,8 @@ private fun ChannelCard(
     val quality = if (measuredQuality.isNotBlank()) measuredQuality else bestQuality
 
     val cardModifier = Modifier
-        .width(200.dp)
-        .height(116.dp)
+        .width(236.dp)
+        .height(124.dp)
         .border(
             width = if (focused) 3.dp else 1.dp,
             color = if (focused) KzBlue else Color(0xFF232C38),
@@ -907,7 +933,7 @@ private fun ChannelCard(
                 model = group.logo,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
-                modifier = Modifier.size(66.dp)
+                modifier = Modifier.size(72.dp)
             )
             Column(Modifier.padding(start = 10.dp)) {
                 Text(text = group.name, fontSize = 15.sp, maxLines = 2)
@@ -1450,4 +1476,251 @@ private fun Int.resizeMode(): Int = when (this) {
     1 -> AspectRatioFrameLayout.RESIZE_MODE_FILL
     2 -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
     else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+}
+/** Ancho de la barra lateral (la columna de secciones). */
+private val RAIL_WIDTH = 160.dp
+
+/**
+ * Barra lateral: la columna de secciones de la app, a la izquierda de la grilla.
+ *
+ * Es la casa de todo lo que antes exigia una tecla de color (zap, buscar,
+ * ajustes, mosaico): hay controles remotos que no las tienen. Se enfoca con
+ * LEFT en la primera columna y se deja con RIGHT o BACK.
+ */
+@Composable
+private fun RailColumn(controller: TvController) {
+    val active by controller.railActive.collectAsState()
+    val focus by controller.railFocus.collectAsState()
+    val favoritesOnly by controller.favoritesOnly.collectAsState()
+    val zapOnly by controller.zapFavoritesOnly.collectAsState()
+
+    Column(
+        Modifier
+            .width(RAIL_WIDTH)
+            .fillMaxHeight()
+            .background(Color(0xFF101722))
+            .padding(horizontal = 9.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(text = "kzIPTV", color = KzBlue, fontSize = 19.sp)
+        Spacer(Modifier.height(14.dp))
+        Rail.entries.forEachIndexed { index, item ->
+            RailItem(
+                label = when (item) {
+                    Rail.CANALES -> "Canales"
+                    Rail.FAVORITOS -> "Favoritos"
+                    Rail.ZAP -> "Zap \u2605"
+                    Rail.BUSCAR -> "Buscar"
+                    Rail.LISTAS -> "Listas"
+                    Rail.COMPARAR -> "Comparar"
+                    Rail.AJUSTES -> "Ajustes"
+                    Rail.IR_A_CANAL -> "Ir a canal #"
+                },
+                mark = when (item) {
+                    Rail.FAVORITOS -> if (favoritesOnly) "\u25CF" else null
+                    Rail.ZAP -> if (zapOnly) "\u25CF" else null
+                    else -> null
+                },
+                selected = active && index == focus
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+/** Una seccion de la barra lateral. */
+@Composable
+private fun RailItem(label: String, mark: String?, selected: Boolean) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Color(0xFF1B3A5C) else Color.Transparent)
+            // El borde solo cuando esta enfocada: con 0.dp igual se ve un pelo.
+            .then(
+                if (selected) {
+                    Modifier.border(
+                        width = 2.dp,
+                        color = KzBlue,
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Color.White else Color(0xFF8D9AAC),
+            fontSize = 14.sp,
+            maxLines = 1
+        )
+        if (mark != null) {
+            Text(
+                text = mark,
+                color = KzBlue,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(start = 5.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Menu contextual del canal (OK largo): las acciones del canal enfocado.
+ *
+ * Se dibuja encima de la grilla o del video: no se interrumpe nada.
+ */
+@Composable
+private fun ChannelMenuOverlay(controller: TvController) {
+    val group = controller.channelMenuGroup()
+    val items = controller.channelMenuItems()
+    val focus by controller.channelMenuFocus.collectAsState()
+    val favorites by controller.favorites.collectAsState()
+    val isFavorite = group != null && controller.isFavorite(group, favorites)
+
+    Box(
+        Modifier.fillMaxSize().background(Color(0xCC000000)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            Modifier
+                .width(430.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF18212E))
+                .padding(18.dp)
+        ) {
+            Text(
+                text = group?.name ?: "Canal",
+                color = Color.White,
+                fontSize = 20.sp,
+                maxLines = 1
+            )
+            Text(
+                text = group?.let { "#${it.number} \u00b7 ${it.variants.size} feeds" } ?: "",
+                color = Color(0xFF7C8899),
+                fontSize = 13.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            items.forEachIndexed { index, action ->
+                val selected = index == focus
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) Color(0xFF1B3A5C) else Color.Transparent)
+                        .then(
+                            if (selected) {
+                                Modifier.border(
+                                    width = 2.dp,
+                                    color = KzBlue,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                            } else {
+                                Modifier
+                            }
+                        )
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = when (action) {
+                            ChannelAction.REPRODUCIR -> "Reproducir"
+                            ChannelAction.FAVORITO ->
+                                if (isFavorite) "Quitar de favoritos" else "Agregar a favoritos"
+                            ChannelAction.CALIDAD -> "Calidad / feeds"
+                            ChannelAction.COMPARAR -> "Comparar en mosaico"
+                        },
+                        color = if (selected) Color.White else Color(0xFFB9C6D6),
+                        fontSize = 16.sp
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "OK ejecuta \u00b7 BACK vuelve",
+                color = Color(0xFF56616F),
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+/**
+ * Teclado numerico en pantalla: para ir a un canal sin teclas de numeros.
+ *
+ * Es la misma idea del buffer 0-9, pero dibujada: el numero escrito sale
+ * arriba con el nombre del canal apenas coincide.
+ */
+@Composable
+private fun NumberPadScreen(controller: TvController) {
+    val buffer by controller.keypadBuffer.collectAsState()
+    val focus by controller.keypadFocus.collectAsState()
+    val match = controller.keypadMatch()
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(KzBg)
+            .padding(34.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(text = "Ir a canal", color = Color.White, fontSize = 26.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = buffer.ifBlank { "--" },
+            color = if (match != null) KzBlue else Color.White,
+            fontSize = 54.sp
+        )
+        Text(
+            text = match?.let { "\u2192 ${it.name}" }
+                ?: "Elegi el numero del canal (sale en la tarjeta de la grilla)",
+            color = Color(0xFF7C8899),
+            fontSize = 15.sp
+        )
+        Spacer(Modifier.height(22.dp))
+
+        // 3 columnas x 4 filas: 1-9, borrar, 0, ir.
+        for (row in 0 until 4) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                for (col in 0 until 3) {
+                    val index = row * 3 + col
+                    val selected = index == focus
+                    val label = when {
+                        NumberPad.isDelete(index) -> "\u232B"
+                        NumberPad.isGo(index) -> "\u25B6"
+                        else -> NumberPad.digitAt(index).toString()
+                    }
+                    Box(
+                        Modifier
+                            .size(width = 112.dp, height = 60.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (selected) Color(0xFF1B3A5C) else KzCard)
+                            .border(
+                                width = if (selected) 3.dp else 1.dp,
+                                color = if (selected) KzBlue else Color(0xFF232C38),
+                                shape = RoundedCornerShape(12.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (selected) Color.White else Color(0xFFB9C6D6),
+                            fontSize = 23.sp
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(11.dp))
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = "OK marca \u00b7 \u25B6 reproduce \u00b7 BACK borra y despues vuelve",
+            color = Color(0xFF56616F),
+            fontSize = 13.sp
+        )
+    }
 }

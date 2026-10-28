@@ -97,7 +97,8 @@ class MainActivity : ComponentActivity() {
                 (
                     screen == Screen.GRID || screen == Screen.QUALITY ||
                         screen == Screen.SEARCH || screen == Screen.MOSAIC ||
-                        screen == Screen.SETTINGS || screen == Screen.LISTS
+                        screen == Screen.SETTINGS || screen == Screen.LISTS ||
+                        screen == Screen.CHANNEL_MENU || screen == Screen.NUMBER_PAD
                     )
             ) {
                 if (event.action == KeyEvent.ACTION_DOWN) controller.onDpad(event.keyCode)
@@ -152,7 +153,9 @@ class MainActivity : ComponentActivity() {
             }
             RemoteKeys.OK, RemoteKeys.ENTER -> {
                 if (event.action == KeyEvent.ACTION_DOWN) {
-                    okDownAt = event.eventTime
+                    // Los repetidos del control remoto (repeatCount > 0) no reinician
+                    // la cuenta: si lo hicieran, el OK largo de verdad nunca se detectaria.
+                    if (event.repeatCount == 0) okDownAt = event.eventTime
                     return true
                 }
                 val longPress = event.eventTime - okDownAt >= 600
