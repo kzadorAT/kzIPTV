@@ -825,3 +825,90 @@ además perdía la posición de scroll.
 El detalle del diseño está en [docs/PLAN.md](PLAN.md) (sección "Diseño P1 · publicacion del repo, guia EPG por
 defecto y fluidez de la grilla") y el cierre de la sesión en [docs/HANDOVER.md](HANDOVER.md) §15.
 
+---
+
+## 18 · P1 · Control remoto sin botones extra: barra lateral + OK largo (27/10/2026)
+
+### El problema
+
+El control que usa el usuario **no tiene teclas de números ni botones de color**: solo D-pad, OK,
+BACK, volumen y canal (más los botones de la tele: Netflix, Disney, Config...). El `getevent` del
+control de la TV (`TCL_RC902V_M8`) sí reporta `KEY_0..9`, `KEY_RED/GREEN/YELLOW/BLUE` y `KEY_MENU`,
+pero el control que tiene en la mano no las tiene: **la app no puede depender de esas teclas**.
+
+Antes, las acciones vivían en las teclas de color (ROJO = zap de favoritos, AMARILLO = favorito,
+VERDE = buscar, AZUL = ajustes, MENU/INFO = mosaico) y el número de canal en las teclas 0-9. Con ese
+control esas opciones quedaban inalcanzables.
+
+### Decisiones
+
+1. Todo tiene que ser alcanzable con **D-pad + OK + BACK**. Las teclas de color y los números
+   quedan como atajos opcionales: aceleran si el control los tiene, pero nunca son el único camino.
+2. **Barra lateral (LEFT)**: columna fija a la izquierda de la grilla con las secciones de la app
+   (patrón del launcher de Android TV y de YouTube TV). LEFT en la primera columna la enfoca, RIGHT
+   la deja, BACK la cierra.
+3. **Menú contextual (OK largo)**: sobre el canal enfocado de la grilla o el canal que se está
+   mirando (patrón de Plex/Jellyfin). Reemplaza las acciones que exigían AMARILLO o el menú de calidad.
+4. **BACK sigue siendo "volver"**: nunca un atajo. El BACK mantenido se descarta (choca con el doble
+   BACK que ya cierra la app).
+5. Las **teclas propias de la tele** (Netflix, Disney, Config) las consume la tele antes que la app:
+   no se usan.
+6. **Ir a canal # sin teclas numéricas**: teclado numérico en pantalla (3×4); las teclas 0-9 siguen
+   funcionando como atajo cuando están.
+
+### La barra lateral (LEFT)
+
+| Sección | Qué hace |
+|---|---|
+| Canales | Quita el filtro de categoría y el de favoritos: vuelve a la grilla completa |
+| Favoritos | Muestra solo los favoritos (mismo criterio que la estrella: por clave canónica) |
+| Zap favoritos | Alterna el modo de zap (lo que era la tecla ROJO) |
+| Buscar | Abre la búsqueda (lo que era la tecla VERDE) |
+| Listas | Abre el selector de playlists |
+| Comparar | Abre el mosaico (lo que era MENU/INFO) |
+| Ajustes | Abre Ajustes (lo que era la tecla AZUL) |
+| Ir a canal # | Abre el teclado numérico en pantalla |
+
+### El menú contextual (OK largo)
+
+| Acción | Qué hace |
+|---|---|
+| Reproducir | Arranca el canal (en el reproductor no aparece: ya se está viendo) |
+| Favorito | Agrega o saca de favoritos (con su estado a la vista) |
+| Calidad | Abre el selector de variantes |
+| Comparar | Abre el mosaico con ese canal entre los comparados |
+
+### Qué se implementó
+
+| Pieza | Qué hace |
+|---|---|
+| `core/nav/NumberPad.kt` | teclado numérico en código puro (12 celdas, 3 columnas) + tests |
+| `ui/TvController.kt` | `Screen.CHANNEL_MENU`, `Screen.NUMBER_PAD`, foco de la barra, filtro de favoritos |
+| `ui/TvRoot.kt` | columna de la barra lateral, panel del menú contextual, pantalla del teclado, textos de ayuda |
+| `MainActivity.kt` | las dos pantallas nuevas también reciben el D-pad; el auto-repeat del control ya no rompe el OK largo |
+
+### Verificado en la TV real (TCL Smart TV Pro `192.168.1.11`, 27/10/2026)
+
+| Prueba | Resultado |
+|---|---|
+| LEFT en la grilla | abre la barra con las 8 secciones y el foco visible (captura) |
+| Favoritos (barra) | `screen=GRID`, cartel "Solo favoritos"; encabezado **"1 canales / 206 feeds / solo FAVORITOS"** (captura) |
+| Reproducir desde Favoritos | `screen=PLAYER`, `playback=playing` |
+| OK largo en el reproductor | abre el panel del canal con "Quitar de favoritos / Calidad · feeds / Comparar en mosaico" (captura) |
+| Favorito sin tecla de color | DOWN + OK: la etiqueta pasa a "Quitar de favoritos" y la API informa `favorite=true` |
+| Calidad · feeds | abre "Calidad de canal" con las 2 variantes (1080P, HD) y su estado |
+| Comparar en mosaico | abre el mosaico (16 tiles, miniaturas vivas, "ON AIR") |
+| Ir a canal # | abre el teclado 3×4 ("Ir a canal") |
+| Buscar | abre "Buscar canal" (201 coincidencias) |
+| Listas | abre "Listas de canales" (1 de 1 activas) |
+| Ajustes | abre Ajustes (Servidor web / Emparejar / Zap / Video / Guía EPG / Actualizar playlist / Listas) |
+| Servidor web | se apagó desde Ajustes al terminar la verificación (la API dejó de responder) |
+| Tests | **109 unitarios verdes** (18 suites) + `assembleDebug` OK |
+
+> Nota: `adb shell input keyevent --longpress 23` **no** produce un OK largo real en esa TV, así que el
+> OK largo se verificó inyectando la tecla por la API (`POST /api/command` con `longPress:true`).
+
+El detalle del diseño está en [docs/PLAN.md](PLAN.md) §18 y el cierre de la sesión en
+[docs/HANDOVER.md](HANDOVER.md) §18.
+
+

@@ -1,12 +1,20 @@
 # HANDOVER - kzIPTV (para retomar en un chat nuevo)
 
-> Fecha de corte: **26/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
+> Fecha de corte: **27/10/2026** (noche, Argentina) - Rama: `main` - APK debug: `ar.kziptv.debug`
 > - Rama `main` **con remoto**: `origin` = `https://github.com/kzadorAT/kzIPTV.git` (repo **publico**).
-> - Ultimo commit funcional: `4f7ab58` (grilla fluida + guia EPG por defecto); el de docs va aparte.
+> - Ultimo commit funcional: `535e7b7` (control remoto sin botones extra: barra lateral + OK largo); el de docs va aparte.
 >
 > **Este archivo es el punto de partida del proximo chat.** Leelo entero antes de tocar nada:
 > tiene el estado real, las decisiones tomadas, los comandos exactos para compilar/probar/instalar,
 > los limites fisicos de la TV y la lista de lo que falta.
+>
+> **Resumen de la sesion que se cerro (27/10/2026, noche):** se hizo el **control remoto sin botones
+> extra**: el usuario reporto que su control no tiene teclas de numeros ni botones de color, asi que
+> ahora **todo se llega con D-pad + OK + BACK**: una **barra lateral con LEFT** (Canales, Favoritos,
+> Zap, Buscar, Listas, Comparar, Ajustes e Ir a canal) y un **menu contextual con OK largo**
+>(Reproducir, Favorito, Calidad, Comparar), mas un **teclado numerico en pantalla** para entrar a un
+> canal. Las teclas de color y los numeros quedan como atajos opcionales. Verificado en la TV real.
+> Seccion 18.
 >
 > **Resumen de la sesion que se cerro (26/10/2026, 3a parte de la noche):** el repo quedo **publico** en
 > GitHub (`https://github.com/kzadorAT/kzIPTV`), la guia EPG del repo paso a ser la **URL por defecto**
@@ -757,6 +765,106 @@ guia estaba vencida y la app no tenia "ahora" que mostrar (el error era real, no
 4. Opcional: **precalentar** los logos de la grilla al iniciar.
 5. Opcional: dejar el **OK largo** tambien en el companion (hoy se puede mandar por API, pero el
    boton del control remoto es un OK corto).
+
+---
+
+## 18 - Cierre de la sesion (27/10/2026): control remoto sin botones extra
+
+### 18.1 - El problema
+
+El control del usuario **no tiene teclas de numeros ni botones de color**: solo D-pad, OK, BACK,
+volumen y canal (mas los botones de la tele: Netflix, Disney, Config...). El `getevent` del control de
+la TV (`TCL_RC902V_M8`) si reporta `KEY_0..9` y `KEY_RED/GREEN/YELLOW/BLUE`, pero el control que tiene
+en la mano no los tiene: **la app no puede depender de esas teclas**.
+
+Antes las acciones vivian en las teclas de color (ROJO = zap de favoritos, AMARILLO = favorito,
+VERDE = buscar, AZUL = ajustes, MENU/INFO = mosaico) y el numero de canal en las teclas 0-9. Con ese
+control esas opciones quedaban inalcanzables.
+
+### 18.2 - Que se implemento
+
+Decisiones:
+
+1. Todo tiene que ser alcanzable con **D-pad + OK + BACK**. Las teclas de color y los numeros quedan
+   como atajos opcionales: aceleran si el control los tiene, pero nunca son el unico camino.
+2. **Barra lateral con LEFT**: columna fija a la izquierda de la grilla con las secciones de la app
+   (patron del launcher de Android TV y de YouTube TV). LEFT la enfoca, RIGHT la deja, BACK la cierra.
+3. **Menu contextual con OK largo**: sobre el canal enfocado de la grilla o el canal que se esta
+   mirando (patron de Plex/Jellyfin).
+4. **BACK sigue siendo "volver"**: nunca un atajo. El BACK mantenido se descarta (choca con el doble
+   BACK que ya cierra la app).
+5. Las teclas propias de la tele (Netflix, Disney, Config) las consume la tele antes que la app.
+6. **Ir a canal #** sin teclas numericas: teclado en pantalla (3x4). Las teclas 0-9 siguen siendo atajo.
+
+La barra lateral (LEFT):
+
+| Seccion | Que hace |
+|---|---|
+| Canales | Quita el filtro de categoria y el de favoritos: vuelve a la grilla completa |
+| Favoritos | Muestra solo los favoritos (mismo criterio que la estrella: por clave canonica) |
+| Zap favoritos | Alterna el modo de zap (lo que era la tecla ROJO) |
+| Buscar | Abre la busqueda (lo que era la tecla VERDE) |
+| Listas | Abre el selector de playlists |
+| Comparar | Abre el mosaico (lo que era MENU/INFO) |
+| Ajustes | Abre Ajustes (lo que era la tecla AZUL) |
+| Ir a canal # | Abre el teclado numerico en pantalla |
+
+El menu contextual (OK largo):
+
+| Accion | Que hace |
+|---|---|
+| Reproducir | Arranca el canal (en el reproductor no aparece: ya se esta viendo) |
+| Favorito | Agrega o saca de favoritos (con su estado a la vista) |
+| Calidad | Abre el selector de variantes |
+| Comparar | Abre el mosaico con ese canal entre los comparados |
+
+| Pieza | Que hace |
+|---|---|
+| `core/nav/NumberPad.kt` | teclado numerico en codigo puro (12 celdas, 3 columnas) + tests |
+| `ui/TvController.kt` | `Screen.CHANNEL_MENU`, `Screen.NUMBER_PAD`, foco de la barra, filtro de favoritos |
+| `ui/TvRoot.kt` | columna de la barra lateral, panel del menu contextual, pantalla del teclado, textos de ayuda |
+| `MainActivity.kt` | las dos pantallas nuevas tambien reciben el D-pad; el auto-repeat del control ya no rompe el OK largo |
+
+### 18.3 - Verificado en la TV real (TCL Smart TV Pro, `192.168.1.11:5555`)
+
+| Prueba | Resultado |
+|---|---|
+| LEFT en la grilla | abre la barra con las 8 secciones y el foco visible |
+| Favoritos (barra) | `screen=GRID`, cartel "Solo favoritos"; encabezado "1 canales / 206 feeds / solo FAVORITOS" |
+| Reproducir desde Favoritos | `screen=PLAYER`, `playback=playing` |
+| OK largo en el reproductor | abre el panel del canal ("Quitar de favoritos / Calidad · feeds / Comparar en mosaico") |
+| Favorito sin tecla de color | DOWN + OK: la etiqueta pasa a "Quitar de favoritos"; la API informa `favorite=true` |
+| Calidad · feeds | abre "Calidad de canal" con las 2 variantes (1080P, HD) |
+| Comparar en mosaico | abre el mosaico (16 tiles, miniaturas vivas, "ON AIR") |
+| Ir a canal # | abre el teclado 3x4 ("Ir a canal") |
+| Buscar | abre "Buscar canal" (201 coincidencias) |
+| Listas | abre "Listas de canales" (1 de 1 activas) |
+| Ajustes | abre Ajustes (Servidor web / Emparejar / Zap / Video / Guia EPG / Actualizar playlist / Listas) |
+| Servidor web | se apago desde Ajustes al terminar la verificacion (la API dejo de responder) |
+| Tests | **109 unitarios verdes** (18 suites) + `assembleDebug` OK |
+
+> Ojo: `adb shell input keyevent --longpress 23` **no** genera un OK largo real en esa TV. El OK largo
+> se verifico inyectando la tecla por la API (`POST /api/command` con `longPress:true`).
+
+### 18.4 - Estado al dejar esta sesion
+
+- El APK queda instalado en la TV y verificado en las 8 secciones de la barra y en las 4 acciones del
+  menu contextual.
+- El **server web quedo APAGADO** (se apago desde Ajustes) y el token de pairing no quedo en disco.
+- La TV quedo con 201 canales / 206 feeds, 1 lista activa (iptv-org · Argentina) y la guia EPG de 7 dias.
+- Tests: **109 unitarios verdes** + `assembleDebug` OK.
+- Las capturas de la verificacion quedaron en `.tmp/` (no se versionan).
+
+### 18.5 - Por donde seguir (proximo chat)
+
+1. **Barra de opciones del reproductor con DOWN**: es la parte de la idea original que quedo en backlog
+   (el "player options rail"). Hoy, desde el video, el menu contextual se abre con OK largo.
+2. La **guia lineal de EPG** (P2).
+3. **Ver despues** / cola de reproduccion (P1).
+4. **Release firmado + R8 + baselineProfile** (P1): el arranque en debug es 5,75 s.
+5. Opcional: **precalentar** los logos de la grilla al iniciar.
+6. Opcional: boton de **OK largo** en el companion (hoy se puede mandar por API).
+
 
 2. **Guia lineal de EPG** (P2): la guia en una sola lista lineal por canal/hora.
 3. Opcional: **precalentar** los logos de la grilla al iniciar (hoy se cargan en segundo plano

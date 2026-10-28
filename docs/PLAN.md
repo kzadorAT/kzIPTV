@@ -564,4 +564,71 @@ desactiva; con **OK largo** se quita la lista (pide confirmación). BACK vuelve 
 - `KzDatabaseMigrationTest`: migración 1→6 sin perder datos y con `enabled = 1` por defecto.
 - En la TV real: dos listas (la embebida + una mandada desde el companion), activar y desactivar cada
   una y ver cómo cambia el número de canales de la grilla, con los favoritos y la numeración intactos.
+## 18 · Diseño P1 · control remoto sin botones extra (27/10/2026)
+
+El control que usa el usuario **no tiene teclas de numeros ni botones de color**: solo D-pad, OK,
+BACK, volumen y canal (mas los botones de la tele: Netflix, Disney, Config...). El `getevent` del
+control de la TV (`TCL_RC902V_M8`) si reporta `KEY_0..9`, `KEY_RED/GREEN/YELLOW/BLUE` y
+`KEY_MENU`, pero el control que tiene en la mano no las tiene: **la app no puede depender de esas
+teclas**.
+
+Hoy las acciones viven en las teclas de color (ROJO = zap de favoritos, AMARILLO = favorito, VERDE =
+buscar, AZUL = ajustes, MENU/INFO = mosaico) y el numero de canal vive en las teclas 0-9. Con un
+control sin esos botones esas acciones quedan inalcanzables.
+
+### Decisiones
+
+1. **Todo tiene que ser alcanzable con D-pad + OK + BACK.** Las teclas de color y los numeros
+   quedan como atajos opcionales: aceleran si el control los tiene, pero nunca son el unico camino.
+2. **Barra lateral (LEFT)**: una columna fija a la izquierda de la grilla con las secciones de la
+   app. Es el patron del launcher de Android TV y de YouTube TV. LEFT en la primera columna la
+   enfoca, RIGHT la deja, BACK la cierra.
+3. **Menu contextual (OK largo)**: sobre el canal enfocado de la grilla (o el canal que se esta
+   mirando). Es el patron de Plex/Jellyfin/YouTube TV. Sirve para las acciones que antes exigian
+   AMARILLO (favorito) o el menu de calidad.
+4. **BACK sigue siendo "volver"**: nunca un atajo. El BACK mantenido se descarta (choca con el doble
+   BACK que ya cierra la app).
+5. **Las teclas propias de la tele** (Netflix, Disney, Config) las consume la tele antes que la app:
+   no se usan.
+6. **Ir a canal # sin teclas numericas**: teclado numerico en pantalla (3x4) con el numero escrito
+   arriba; las teclas 0-9 siguen funcionando como atajo cuando estan.
+
+### La barra lateral
+
+| Seccion | Que hace |
+|---|---|
+| Canales | Quita el filtro de categoria y el de favoritos: vuelve a la grilla completa |
+| Favoritos | Muestra solo los favoritos (mismo criterio que la estrella: por clave canonica) |
+| Zap favoritos | Alterna el modo de zap (lo que era la tecla ROJO) |
+| Buscar | Abre la busqueda (lo que era la tecla VERDE) |
+| Listas | Abre el selector de playlists |
+| Comparar | Abre el mosaico (lo que era MENU/INFO) |
+| Ajustes | Abre Ajustes (lo que era la tecla AZUL) |
+| Ir a canal # | Abre el teclado numerico en pantalla |
+
+### El menu contextual del canal
+
+| Accion | Que hace |
+|---|---|
+| Reproducir | Arranca el canal (en el reproductor no aparece: ya se esta viendo) |
+| Favorito | Agrega o saca de favoritos (con su estado a la vista) |
+| Calidad | Abre el selector de variantes |
+| Comparar | Abre el mosaico con ese canal entre los comparados |
+
+### Lo que cambia
+
+| Pieza | Que hace |
+|---|---|
+| `core/nav/NumberPad.kt` | teclado numerico en codigo puro (12 celdas, 3 columnas) + tests |
+| `ui/TvController.kt` | `Screen.CHANNEL_MENU`, `Screen.NUMBER_PAD`, foco de la barra, filtro de favoritos |
+| `ui/TvRoot.kt` | columna de la barra lateral, panel del menu contextual, pantalla del teclado, textos de ayuda |
+| `MainActivity.kt` | las dos pantallas nuevas tambien reciben el D-pad |
+
+### Verificacion prevista
+
+- Tests unitarios del teclado numerico (celdas, navegacion, buffer).
+- En la TV real: LEFT abre la barra y se llega a Ajustes/Buscar/Listas/Mosaico/Ir a canal; el OK
+  largo sobre un canal abre el menu contextual y el favorito se puede poner y sacar SIN teclas de
+  color; el teclado numerico reproduce el canal pedido.
+
 
